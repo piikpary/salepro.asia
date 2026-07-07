@@ -317,7 +317,10 @@ class TransactionUtil extends Util
        
         //Check if transaction_sell_lines_id is set, used when editing.
         if (! empty($product['transaction_sell_lines_id'])) {
-            $edit_id_temp = $this->editSellLine($product, $location_id, $status_before, $multiplier, $uf_data);
+            // When the sell is linked to a DN, stock is managed exclusively through
+            // the DN — skip any VLD adjustment on the sell's own lines.
+            $skip_stock = is_object($transaction) && ! empty($transaction->delivery_note_id);
+            $edit_id_temp = $this->editSellLine($product, $location_id, $status_before, $multiplier, $uf_data, $skip_stock);
             $edit_ids = array_merge($edit_ids, $edit_id_temp);
            
             //update or create modifiers for existing sell lines
@@ -471,8 +474,10 @@ class TransactionUtil extends Util
 
         $deleted_lines = array_merge($deleted_lines, $combo_delete_lines);
         $adjust_qty = $status_before == 'draft' ? false : true;
+        // Skip stock on sell-line deletion when delivery_note_id is set — stock managed by DN
+        $skip_stock_for_dn = is_object($transaction) && ! empty($transaction->delivery_note_id);
 
-        $this->deleteSellLines($deleted_lines, $location_id, $adjust_qty);
+        $this->deleteSellLines($deleted_lines, $location_id, $adjust_qty, true, $skip_stock_for_dn);
     }
     $combo_lines = [];
 
@@ -817,7 +822,7 @@ class TransactionUtil extends Util
      * @param  int  $location_id
      * @return bool
      */
-    public function editSellLine($product, $location_id, $status_before, $multiplier = 1, $uf_data = true)
+    public function editSellLine($product, $location_id, $status_before, $multiplier = 1, $uf_data = true, $skip_stock = false)
     {
         //Get the old order quantity
         $sell_line = TransactionSellLine::with(['product', 'warranties'])
@@ -825,8 +830,8 @@ class TransactionUtil extends Util
 
         $old_qty = $sell_line->quantity;
         $edit_ids[] = $product['transaction_sell_lines_id'];
-        //Adjust quanity
-        if ($status_before != 'draft') {
+        //Adjust quanity — skip when sell has delivery_note_id (stock managed by DN)
+        if ($status_before != 'draft' && ! $skip_stock) {
             $new_qty = $this->num_uf($product['quantity']) * $multiplier;
             $difference = $sell_line->quantity - $new_qty;
             $this->adjustQuantity($location_id, $product['product_id'], $product['variation_id'], $difference);
@@ -889,7 +894,8 @@ class TransactionUtil extends Util
                 $edit_ids[] = $combo_line['transaction_sell_lines_id'];
             }
 
-            $adjust_stock = ($status_before != 'draft');
+            // skip_stock=true when sell has delivery_note_id — stock managed by DN, not sell
+            $adjust_stock = ($status_before != 'draft') && ! $skip_stock;
             $this->updateEditedSellLineCombo($product['combo'], $location_id, $adjust_stock);
         }
 
@@ -901,7 +907,8 @@ class TransactionUtil extends Util
                 $edit_ids[] = $combo_line['transaction_sell_lines_id'];
             }
 
-            $adjust_stock = ($status_before != 'draft');
+            // skip_stock=true when sell has delivery_note_id — stock managed by DN, not sell
+            $adjust_stock = ($status_before != 'draft') && ! $skip_stock;
             $this->updateEditedSellLineCombo($product['combo_single'], $location_id, $adjust_stock);
         }
 
@@ -917,14 +924,15 @@ class TransactionUtil extends Util
      * @param  int  $location_id
      * @return bool
      */
-    public function deleteSellLines($transaction_line_ids, $location_id, $transaction_type = 'sell', $force_delete = true)
+    public function deleteSellLines($transaction_line_ids, $location_id, $transaction_type = 'sell', $force_delete = true, $skip_stock = false)
     {
         if (!empty($transaction_line_ids)) {
             $sell_lines = TransactionSellLine::whereIn('id', $transaction_line_ids)->get();
-            
+
             // Adjust quantity
+            // Skip when sell has delivery_note_id — stock is managed by DN/DR, not the sell
             foreach ($sell_lines as $line) {
-                if ($transaction_type == 'sell') {
+                if ($transaction_type == 'sell' && !$skip_stock) {
                     $this->adjustQuantity($location_id, $line->product_id, $line->variation_id, $line->quantity);
                 }
                 $this->updateSalesOrderLine($line->so_line_id, 0, $line->quantity);
@@ -1644,6 +1652,19 @@ class TransactionUtil extends Util
         } elseif ($transaction_type == 'sales_order') {
             $output['invoice_heading'] = ! empty($il->common_settings['sales_order_heading']) ? $il->common_settings['sales_order_heading'] : __('lang_v1.sales_order');
             $output['invoice_no_prefix'] = $il->quotation_no_prefix;
+        } elseif ($transaction_type == 'delivery_note') {
+            $output['invoice_heading'] = ! empty($il->dn_heading) ? $il->dn_heading : __('lang_v1.delivery_note');
+
+            // Pull exchange_rate and SO reference from linked sales_order (DN stores exchange_rate=1 by default)
+            if (!empty($transaction->sales_order_id)) {
+                $so = \App\Transaction::find($transaction->sales_order_id);
+                if ($so) {
+                    // Override exchange_rate with the SO's rate
+                    $transaction->exchange_rate = $so->exchange_rate;
+                    // Provide SO invoice reference for Order No. / Order dates display
+                    $transaction->sales_order_ids = json_encode([$so->id]);
+                }
+            }
         } else {
             $output['invoice_heading'] = $il->invoice_heading;
             if ($transaction->payment_status == 'paid' && ! empty($il->invoice_heading_paid)) {
@@ -1689,7 +1710,7 @@ class TransactionUtil extends Util
 
         $output['lines'] = [];
         $total_exempt = 0;
-        if (in_array($transaction_type, ['sell', 'sales_order'])) {
+        if (in_array($transaction_type, ['sell', 'sales_order', 'delivery_note'])) {
             $sell_line_relations = ['modifiers', 'sub_unit', 'warranties'];
 
             if ($is_lot_number_enabled == 1) {
@@ -1826,6 +1847,8 @@ class TransactionUtil extends Util
         }else{
             $output['payment_value'] = " ";
         }
+
+        $output['marketing_price_label'] = !empty($invoice_layout->marketing_price_label) ? $invoice_layout->marketing_price_label : null;
 
         $output['discount_label'] .= ($transaction->discount_type == 'percentage') ? ' <small>('.$this->num_f($transaction->discount_amount, false, $business_details).'%)</small> :' : '';
 
@@ -2006,7 +2029,7 @@ class TransactionUtil extends Util
         //Barcode related information.
         $output['show_barcode'] = ! empty($il->show_barcode) ? true : false;
 
-        if (in_array($transaction_type, ['sell', 'sales_order'])) {
+        if (in_array($transaction_type, ['sell', 'sales_order', 'delivery_note'])) {
             //Qr code related information.
             $output['show_qr_code'] = ! empty($il->show_qr_code) ? true : false;
 
@@ -2515,6 +2538,9 @@ class TransactionUtil extends Util
                 'line_total_exc_tax' => $this->num_f($line->unit_price * $line->quantity, false, $business_details),
                 'line_total_exc_tax_uf' => $line->unit_price * $line->quantity,
                 'variation_id' => $variation->id,
+                // Marketing price fields
+                'weight' => !empty($product->weight) ? (float) $product->weight : null,
+                'default_sell_price' => $variation->default_sell_price,
             ];
             
             $temp = [];
@@ -2721,6 +2747,9 @@ class TransactionUtil extends Util
 
                 //Fields for 4th column
                 'line_total' => $this->num_f($line->unit_price_inc_tax * $line->quantity_returned, false, $business_details),
+                // Marketing price fields
+                'weight' => !empty($product->weight) ? (float) $product->weight : null,
+                'default_sell_price' => $variation->default_sell_price,
             ];
             $line_array['line_discount'] = 0;
 
@@ -5380,8 +5409,9 @@ class TransactionUtil extends Util
                 }
             }
             
-            // KEY FIX: keep your existing logic
-            $this->deleteSellLines($deleted_sell_lines_ids, $transaction->location_id, $transaction->type, false);
+            // Skip stock restoration when sell is linked to a DN — stock is managed by DN/DR only
+            $skip_stock = !empty($transaction->delivery_note_id);
+            $this->deleteSellLines($deleted_sell_lines_ids, $transaction->location_id, $transaction->type, false, $skip_stock);
 
             // Update customer reward points
             if ($transaction->type == 'sell') {

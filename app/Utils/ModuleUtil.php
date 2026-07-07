@@ -135,44 +135,52 @@ class ModuleUtil extends Util
      * @return bool
      */
     public function hasThePermissionInSubscription($business_id, $permission, $callback_function = null)
-    {
-        if ($this->isSuperadminInstalled()) {
-            if (auth()->user()->can('superadmin')) {
-                return true;
-            }
-
-            $package = \Modules\Superadmin\Entities\Subscription::active_subscription($business_id);
-
-            if (empty($package)) {
-                return false;
-            } elseif (isset($package['package_details'][$permission])) {
-                if (! is_null($callback_function)) {
-                    $obj = new ModuleUtil();
-                    $permissions = $obj->getModuleData($callback_function);
-
-                    $permission_formatted = [];
-                    foreach ($permissions as $per) {
-                        foreach ($per as $details) {
-                            $permission_formatted[$details['name']] = $details['label'];
-                        }
-                    }
-
-                    if (isset($permission_formatted[$permission])) {
-                        return $package['package_details'][$permission];
-                    } else {
-                        return false;
-                    }
-                } else {
-                    return $package['package_details'][$permission];
-                }
-            } else {
-                return false;
-            }
-        }
-
+{
+    // Allow the matching business Admin role to access Accounting.
+    if (
+        $permission === 'accounting_module'
+        && auth()->check()
+        && auth()->user()->hasRole('Admin#'.$business_id)
+    ) {
         return true;
     }
 
+    if ($this->isSuperadminInstalled()) {
+        if (auth()->user()->can('superadmin')) {
+            return true;
+        }
+
+        $package = \Modules\Superadmin\Entities\Subscription::active_subscription($business_id);
+
+        if (empty($package)) {
+            return false;
+        } elseif (isset($package['package_details'][$permission])) {
+            if (! is_null($callback_function)) {
+                $obj = new ModuleUtil();
+                $permissions = $obj->getModuleData($callback_function);
+
+                $permission_formatted = [];
+                foreach ($permissions as $per) {
+                    foreach ($per as $details) {
+                        $permission_formatted[$details['name']] = $details['label'];
+                    }
+                }
+
+                if (isset($permission_formatted[$permission])) {
+                    return $package['package_details'][$permission];
+                } else {
+                    return false;
+                }
+            } else {
+                return $package['package_details'][$permission];
+            }
+        } else {
+            return false;
+        }
+    }
+
+    return true;
+}
     /**
      * Returns the name of view used to display for subscription expired.
      *

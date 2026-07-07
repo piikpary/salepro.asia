@@ -2598,8 +2598,8 @@ $sells->appends(request()->query());
                     . ' err=' . ($response->json('description') ?? '-'));
             }
 
-        } catch (\Exception $e) {
-            \Log::error('SalesOrder Telegram invoice error (tx=' . $transaction->id . '): ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            \Log::error('SalesOrder Telegram invoice error (tx=' . $transaction->id . '): ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
         }
     }
 

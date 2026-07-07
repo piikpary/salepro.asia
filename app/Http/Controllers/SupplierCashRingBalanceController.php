@@ -408,7 +408,7 @@ class SupplierCashRingBalanceController extends Controller
             ->where('location_id', $location_id)
             ->where('cash_ring_balance_id', $cash_ring_balance_id)
             ->update([
-                'stock_cash_ring_balance' => DB::raw('GREATEST(stock_cash_ring_balance - ' . (int)$quantity . ', 0)')
+                'stock_cash_ring_balance' => DB::raw('stock_cash_ring_balance - ' . (int)$quantity)
             ]);
 
         if ($updated) {
@@ -756,7 +756,6 @@ class SupplierCashRingBalanceController extends Controller
         // Calculate new stock
         if ($action === 'decrease') {
             $newStock = ($record ? $record->stock_cash_ring_balance : 0) - $quantity;
-            $newStock = max(0, $newStock); // Prevent negative stock
         } else { // increase
             $newStock = ($record ? $record->stock_cash_ring_balance : 0) + $quantity;
         }

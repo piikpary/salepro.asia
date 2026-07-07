@@ -143,7 +143,7 @@ class AppServiceProvider extends ServiceProvider
 
         //Blade directive to format quantity values into required format.
         Blade::directive('format_quantity', function ($expression) {
-            return "number_format($expression, session('business.quantity_precision', 2), session('currency')['decimal_separator'], session('currency')['thousand_separator'])";
+            return "(function(\$__v) { \$__v = (float)\$__v; \$__p = (int) session('business.quantity_precision', 2); if (\$__v != floor(\$__v)) { \$__str = rtrim(rtrim(sprintf('%.10f', \$__v), '0'), '.'); \$__dot = strpos(\$__str, '.'); \$__a = (\$__dot !== false) ? (strlen(\$__str) - \$__dot - 1) : 0; \$__p = max(\$__p, \$__a); } return number_format(\$__v, \$__p, session('currency')['decimal_separator'], session('currency')['thousand_separator']); })($expression)";
         });
 
         //Blade directive to return appropiate class according to transaction status

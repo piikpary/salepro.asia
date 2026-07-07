@@ -18,6 +18,9 @@ use App\Product;
 use App\SellingPriceGroup;
 use App\TaxRate;
 use App\Transaction;
+use App\BusinessStampRule;
+use App\TransactionStampPoint;
+use App\CustomerStampPointBalance;
 use App\TransactionSellLine;
 use App\TypesOfService;
 use App\User;
@@ -206,15 +209,56 @@ private function serveFastPaginationCache($business_id, $sale_type, $start, $len
             
             // ⭐ CRITICAL: Regenerate action buttons for current user
             // Cache doesn't store action buttons because they're user-specific
+
+            // Batch-fill dn_qty_covered for SO rows that pre-date this field (stale cache)
+            $staleSoIds = [];
+            foreach ($cachedPage as $r) {
+                if (($r['type'] ?? '') === 'sales_order' && !isset($r['dn_qty_covered'])) {
+                    $staleSoIds[] = $r['id'];
+                }
+            }
+            $staleDnQtyCovered = [];
+            if (!empty($staleSoIds)) {
+                $soQtys = DB::table('transaction_sell_lines')
+                    ->whereIn('transaction_id', $staleSoIds)
+                    ->whereNull('parent_sell_line_id')
+                    ->select('transaction_id', DB::raw('SUM(quantity) as total_qty'))
+                    ->groupBy('transaction_id')
+                    ->pluck('total_qty', 'transaction_id');
+                DB::table('transaction_sell_lines as tsl')
+                    ->join('transactions as t', 'tsl.transaction_id', '=', 't.id')
+                    ->whereIn('t.sales_order_id', $staleSoIds)
+                    ->where('t.type', 'delivery_note')
+                    ->whereNull('t.deleted_at')
+                    ->whereNull('tsl.parent_sell_line_id')
+                    ->select('t.sales_order_id', DB::raw('SUM(tsl.quantity) as dn_total_qty'))
+                    ->groupBy('t.sales_order_id')
+                    ->get()
+                    ->each(function ($r) use (&$staleDnQtyCovered, $soQtys) {
+                        $soQty = $soQtys[$r->sales_order_id] ?? 0;
+                        $staleDnQtyCovered[$r->sales_order_id] = ($soQty > 0 && $r->dn_total_qty >= $soQty);
+                    });
+            }
+
             foreach ($cachedPage as &$row) {
                 // Convert array to object for action button generation
                 $rowObj = (object)$row;
-                
+
+                // Fill dn_qty_covered if missing from stale cache
+                if (!isset($rowObj->dn_qty_covered)) {
+                    $rowObj->dn_qty_covered = $staleDnQtyCovered[$rowObj->id] ?? false;
+                }
+
                 // Get the correct sale_type from row data (handles sell vs sales_order)
                 $sale_type_for_actions = $row['type'] ?? 'sell';
-                
+
                 // Generate fresh action buttons for current user
                 $row['action'] = $this->generateActionButtonsComplete($rowObj, $is_admin, $sale_type_for_actions);
+
+                // Ensure fields added after cache was built are present
+                if (!isset($row['delivery_note_no'])) {
+                    $row['delivery_note_no'] = '—';
+                }
             }
             
             // Return cached data with fresh action buttons (ultra-fast 2-3ms response)
@@ -275,24 +319,57 @@ private function buildAndCachePagination($business_id, $is_admin, $is_crm, $sale
     $paymentMethods = $this->getPaymentMethods($transactionIds);
     $returnData = $this->getReturnData($transactionIds);
     $sellLineTotals = $this->getSellLineTotals($transactionIds);
-    
+
     // Fetch sales order invoices for sells
     $salesOrderIdsList = $data->pluck('sales_order_ids')->toArray();
     $salesOrderInvoices = $this->getSalesOrderInvoices($salesOrderIdsList);
+
+    // Batch-fetch linked delivery notes for sales orders
+    $dnMap = [];
+    if ($sale_type === 'sales_order' && !empty($transactionIds)) {
+        $dnMap = DB::table('transactions')
+            ->whereIn('sales_order_id', $transactionIds)
+            ->where('type', 'delivery_note')
+            ->whereNull('deleted_at')
+            ->select('sales_order_id', 'id as dn_id', 'invoice_no as dn_invoice_no')
+            ->orderBy('id', 'asc')
+            ->get()
+            ->groupBy('sales_order_id');
+    }
+
+    // Map of so_id => bool: true when total DN qty >= total SO qty (block new DNs)
+    $dnQtyCoveredMap = [];
+    if ($sale_type === 'sales_order' && !empty($transactionIds)) {
+        DB::table('transaction_sell_lines as tsl')
+            ->join('transactions as t', 'tsl.transaction_id', '=', 't.id')
+            ->whereIn('t.sales_order_id', $transactionIds)
+            ->where('t.type', 'delivery_note')
+            ->whereNull('t.deleted_at')
+            ->whereNull('tsl.parent_sell_line_id')
+            ->select('t.sales_order_id', DB::raw('SUM(tsl.quantity) as dn_total_qty'))
+            ->groupBy('t.sales_order_id')
+            ->get()
+            ->each(function ($r) use (&$dnQtyCoveredMap, $sellLineTotals) {
+                $soQty = $sellLineTotals[$r->sales_order_id]['total_qty'] ?? 0;
+                $dnQtyCoveredMap[$r->sales_order_id] = ($soQty > 0 && $r->dn_total_qty >= $soQty);
+            });
+    }
 
     // Process data for response with all batch data
     $processedData = [];
     foreach ($data as $row) {
         $processedData[] = $this->processRowForResponse(
-            $row, 
-            $is_admin, 
-            $is_crm, 
-            $sale_type, 
-            $paymentTotals, 
-            $paymentMethods, 
-            $returnData, 
-            $sellLineTotals, 
-            $salesOrderInvoices
+            $row,
+            $is_admin,
+            $is_crm,
+            $sale_type,
+            $paymentTotals,
+            $paymentMethods,
+            $returnData,
+            $sellLineTotals,
+            $salesOrderInvoices,
+            $dnMap,
+            $dnQtyCoveredMap
         );
     }
 
@@ -406,11 +483,41 @@ private function cacheSpecificPage($business_id, $sale_type, $pageNumber, $lengt
         $sellLineTotals = $this->getSellLineTotals($transactionIds);
         $salesOrderIdsList = $data->pluck('sales_order_ids')->toArray();
         $salesOrderInvoices = $this->getSalesOrderInvoices($salesOrderIdsList);
-        
+
+        // Batch-fetch linked delivery notes for sales orders
+        $dnMap = [];
+        if ($sale_type === 'sales_order' && !empty($transactionIds)) {
+            $dnMap = DB::table('transactions')
+                ->whereIn('sales_order_id', $transactionIds)
+                ->where('type', 'delivery_note')
+                ->whereNull('deleted_at')
+                ->select('sales_order_id', 'id as dn_id', 'invoice_no as dn_invoice_no')
+                ->orderBy('id', 'asc')
+                ->get()
+                ->groupBy('sales_order_id');
+        }
+
+        $dnQtyCoveredMap = [];
+        if ($sale_type === 'sales_order' && !empty($transactionIds)) {
+            DB::table('transaction_sell_lines as tsl')
+                ->join('transactions as t', 'tsl.transaction_id', '=', 't.id')
+                ->whereIn('t.sales_order_id', $transactionIds)
+                ->where('t.type', 'delivery_note')
+                ->whereNull('t.deleted_at')
+                ->whereNull('tsl.parent_sell_line_id')
+                ->select('t.sales_order_id', DB::raw('SUM(tsl.quantity) as dn_total_qty'))
+                ->groupBy('t.sales_order_id')
+                ->get()
+                ->each(function ($r) use (&$dnQtyCoveredMap, $sellLineTotals) {
+                    $soQty = $sellLineTotals[$r->sales_order_id]['total_qty'] ?? 0;
+                    $dnQtyCoveredMap[$r->sales_order_id] = ($soQty > 0 && $r->dn_total_qty >= $soQty);
+                });
+        }
+
         // Process data (but without action buttons - will be generated when served)
         $processedData = [];
         foreach ($data as $row) {
-            $rowData = $this->processRowForResponse($row, true, false, $sale_type, $paymentTotals, $paymentMethods, $returnData, $sellLineTotals, $salesOrderInvoices);
+            $rowData = $this->processRowForResponse($row, true, false, $sale_type, $paymentTotals, $paymentMethods, $returnData, $sellLineTotals, $salesOrderInvoices, $dnMap, $dnQtyCoveredMap);
             // Remove action buttons from cache (will be regenerated per user)
             unset($rowData['action']);
             $processedData[] = $rowData;
@@ -1045,9 +1152,11 @@ private function buildFiltersArray()
             'recur_parent_id' => $row['recur_parent_id'] ?? null,
             'is_export' => $row['is_export'] ?? 0,
             'crm_is_order_request' => $row['crm_is_order_request'] ?? null,
+            'has_delivery_note' => $row['has_delivery_note'] ?? 0,
+            'dn_qty_covered' => $row['dn_qty_covered'] ?? false,
         ];
     }
-    
+
     // If already object, ensure all properties exist
     return (object)[
         'id' => $row->id ?? null,
@@ -1065,6 +1174,8 @@ private function buildFiltersArray()
         'recur_parent_id' => $row->recur_parent_id ?? null,
         'is_export' => $row->is_export ?? 0,
         'crm_is_order_request' => $row->crm_is_order_request ?? null,
+        'has_delivery_note' => $row->has_delivery_note ?? 0,
+        'dn_qty_covered' => $row->dn_qty_covered ?? false,
     ];
 }
 
@@ -1129,7 +1240,7 @@ private function processPaymentStatus($row)
 }
 
 // Update your processRowForResponse method to include payment methods and improved payment status
-private function processRowForResponse($row, $is_admin, $is_crm, $sale_type = 'sell', $paymentTotals = [], $paymentMethods = [], $returnData = [], $sellLineTotals = [], $salesOrderInvoices = [])
+private function processRowForResponse($row, $is_admin, $is_crm, $sale_type = 'sell', $paymentTotals = [], $paymentMethods = [], $returnData = [], $sellLineTotals = [], $salesOrderInvoices = [], $dnMap = [], $dnQtyCoveredMap = [])
 {
     $is_direct_sale = isset($row->is_direct_sale) ? (int)$row->is_direct_sale : 1;
     $transaction_type = $row->type ?? $sale_type;
@@ -1170,9 +1281,28 @@ private function processRowForResponse($row, $is_admin, $is_crm, $sale_type = 's
     ];
 
     if ($transaction_type === 'sales_order') {
-        $actionRow = $this->createActionRowObject(array_merge($base_data, ['type' => 'sales_order']));
-        
+        $dns = ($dnMap instanceof \Illuminate\Support\Collection)
+            ? $dnMap->get($row->id, collect())
+            : collect();
+
+        $actionRow = $this->createActionRowObject(array_merge($base_data, [
+            'type'              => 'sales_order',
+            'has_delivery_note' => $dns->isEmpty() ? 0 : 1,
+            'dn_qty_covered'    => $dnQtyCoveredMap[$row->id] ?? false,
+        ]));
+        if ($dns->isEmpty()) {
+            $dn_badge = '—';
+        } else {
+            $dn_badge = $dns->map(function ($dn) {
+                return '<a href="' . route('delivery-note.index') . '?auto_view=' . $dn->dn_id
+                    . '" class="label label-warning" style="margin-right:2px;">' . $dn->dn_invoice_no . '</a>';
+            })->implode(' ');
+        }
+
         $base_data = array_merge($base_data, [
+            'delivery_note_no'    => $dn_badge,
+            'has_delivery_note'   => $dns->isEmpty() ? 0 : 1,
+            'dn_qty_covered'      => $dnQtyCoveredMap[$row->id] ?? false,
             'sales_order_invoice' => '', // Sales orders don't have parent sales orders
             'payment_status' => '',
             'payment_methods' => '',
@@ -1781,8 +1911,12 @@ private function getUltraFastCount($business_id, $sale_type, $hasFilters = false
             $so_action = $pos_settings['so_invoice_action'] ?? 'add_sale_invoice';
             if ($so_action == 'add_sale_proforma') {
                 $html .= '<li><a href="'.route('sell.createFromSalesOrder', [$row->id]).'?as_proforma=1"><i class="fas fa-file-invoice"></i> '.__('lang_v1.so_action_add_sale_proforma').'</a></li>';
-            } else {
+            } elseif ($so_action !== 'off') {
                 $html .= '<li><a href="'.route('sell.createFromSalesOrder', [$row->id]).'"><i class="fas fa-plus-circle"></i> '.__('Add Sale Invoice').'</a></li>';
+            }
+            // Add Delivery Note button — only when Enable Delivery Note is on, user has permission, and SO qty not fully covered by existing DNs
+            if (!empty($pos_settings['enable_delivery_note']) && (auth()->user()->can('delivery_note.create') || $is_admin) && empty($row->dn_qty_covered)) {
+                $html .= '<li><a href="'.route('delivery-note.createFromSalesOrder', [$row->id]).'"><i class="fas fa-truck"></i> Add Delivery Note</a></li>';
             }
         }
     }
@@ -1792,19 +1926,22 @@ private function getUltraFastCount($business_id, $sale_type, $hasFilters = false
     }
     
     if (!$only_shipments) {
-        // ====== CRITICAL FIX: PROPER POS ROUTING ======
-        // Step 1: Check if this is a POS transaction (is_direct_sale == 0)
-        if ($row->is_direct_sale == 0) {
-            if (auth()->user()->can('sell.update')) {
-                // Route POS transactions to SellPosController::edit()
-                $html .= '<li><a target="_blank" href="'.action([\App\Http\Controllers\SellPosController::class, 'edit'], [$row->id]).'"><i class="fas fa-edit"></i> '.__('messages.edit').'</a></li>';
-            }
-        }
-        // Step 2: Check if this is a Sales Order
-        elseif ($row->type == 'sales_order') {
+        // ====== PROPER ROUTING: transaction type takes priority over is_direct_sale ======
+        // A sales_order row's is_direct_sale flag is unreliable (e.g. API-created orders
+        // can have is_direct_sale = 0), so type must be checked first or sales orders get
+        // wrongly routed to the POS edit/delete controller and 404.
+        // Step 1: Check if this is a Sales Order
+        if ($row->type == 'sales_order') {
             if (auth()->user()->can('so.update')) {
                 // Route Sales Orders to SellController::edit()
                 $html .= '<li><a target="_blank" href="'.action([\App\Http\Controllers\SellController::class, 'edit'], [$row->id]).'"><i class="fas fa-edit"></i> '.__('messages.edit').'</a></li>';
+            }
+        }
+        // Step 2: Check if this is a POS transaction (is_direct_sale == 0)
+        elseif ($row->is_direct_sale == 0) {
+            if (auth()->user()->can('sell.update')) {
+                // Route POS transactions to SellPosController::edit()
+                $html .= '<li><a target="_blank" href="'.action([\App\Http\Controllers\SellPosController::class, 'edit'], [$row->id]).'"><i class="fas fa-edit"></i> '.__('messages.edit').'</a></li>';
             }
         }
         // Step 3: Direct Sell (is_direct_sale == 1)
@@ -1818,16 +1955,16 @@ private function getUltraFastCount($business_id, $sale_type, $hasFilters = false
         // ====== DELETE ROUTING (SAME LOGIC) ======
         $delete_link_pos = '<li><a href="'.action([\App\Http\Controllers\SellPosController::class, 'destroy'], [$row->id]).'" class="delete-sale"><i class="fas fa-trash"></i> '.__('messages.delete').'</a></li>';
         $delete_link_sell = '<li><a href="'.action([\App\Http\Controllers\SellPosController::class, 'destroy'], [$row->id]).'" class="delete-sale"><i class="fas fa-trash"></i> '.__('messages.delete').'</a></li>';
-        
-        if ($row->is_direct_sale == 0) {
+
+        if ($row->type == 'sales_order') {
+            // Delete Sales Order — only if no delivery note has been created from it
+            if (auth()->user()->can('so.delete') && empty($row->has_delivery_note)) {
+                $html .= $delete_link_sell;
+            }
+        } elseif ($row->is_direct_sale == 0) {
             // Delete POS via SellPosController
             if (auth()->user()->can('sell.delete')) {
                 $html .= $delete_link_pos;
-            }
-        } elseif ($row->type == 'sales_order') {
-            // Delete Sales Order via SellController
-            if (auth()->user()->can('so.delete')) {
-                $html .= $delete_link_sell;
             }
         } else {
             // Delete Direct Sell via SellController
@@ -2049,6 +2186,37 @@ public function updateCacheAfterDelete($business_id, $transaction_id, $sale_type
      */
 
     // Updated createFromSalesOrder method
+    /**
+     * Create a sell invoice from a Delivery Note.
+     * Sets delivery_note_id so stock is NOT deducted again (already cut by DN).
+     */
+    public function createFromDeliveryNote($id)
+    {
+        if (!auth()->user()->can('sell.create') && !auth()->user()->can('direct_sell.access')) {
+            abort(403, 'Unauthorized action.');
+        }
+
+        $business_id = request()->session()->get('user.business_id');
+
+        $dn = \Illuminate\Support\Facades\DB::table('transactions')
+            ->where('id', $id)
+            ->where('business_id', $business_id)
+            ->where('type', 'delivery_note')
+            ->first();
+
+        if (!$dn) abort(404);
+
+        if ($dn->sales_order_id) {
+            return redirect()->route('sell.createFromSalesOrder', [
+                $dn->sales_order_id,
+                'delivery_note_id' => $id,
+            ]);
+        }
+
+        // No SO — go to regular sell create with dn reference
+        return redirect()->action([SellController::class, 'create'], ['delivery_note_id' => $id]);
+    }
+
     public function createFromSalesOrder($id)
     {
         if (!auth()->user()->can('sell.create') && !auth()->user()->can('direct_sell.access')) {
@@ -2206,6 +2374,18 @@ public function updateCacheAfterDelete($business_id, $transaction_id, $sale_type
         // Pre-select proforma status when coming from "Add Sale Proforma" button
         $status = request()->boolean('as_proforma') ? 'proforma' : '';
 
+        // If coming from "Add Sale Invoice" on a Delivery Note, carry the DN id so
+        // the form submits it as a hidden field → store() skips auto-creating a new DN.
+        $delivery_note_id = request()->query('delivery_note_id');
+
+        // Store dn_id in session so getSalesOrderLines() can read it server-side
+        // (backup in case JS cache doesn't pick up the dn_id param)
+        if (!empty($delivery_note_id)) {
+            session(['pending_dn_id_for_sell' => $delivery_note_id]);
+        } else {
+            session()->forget('pending_dn_id_for_sell');
+        }
+
         // Pre-select commission agent from the sales order
         $selected_commission_agent = $sales_order->commission_agent ?? null;
 
@@ -2222,6 +2402,14 @@ public function updateCacheAfterDelete($business_id, $transaction_id, $sale_type
 
         // Get enabled modules
         $enabled_modules = !empty(session('business.enabled_modules')) ? session('business.enabled_modules') : [];
+
+	 $stamp_point_rules = $this->getStampPointRulesForSale($business_id);
+
+            $customer_stamp_points = $this->getCustomerStampPointsForSale($business_id);
+
+            $transaction_stamp_point = null;
+
+            $transaction_stamp_claims = [];
 
         return view('sell.create')
             ->with(compact(
@@ -2256,7 +2444,11 @@ public function updateCacheAfterDelete($business_id, $transaction_id, $sale_type
                 'change_return',
                 'exchange_rate',
                 'enabled_modules',
-                'selected_commission_agent'
+                'selected_commission_agent',
+                'delivery_note_id',
+		'customer_stamp_points',
+                'transaction_stamp_point',
+                'transaction_stamp_claims',
             ));
     }
 
@@ -2732,6 +2924,14 @@ public function updateCacheAfterDelete($business_id, $transaction_id, $sale_type
         ->where('currency_id', 21)
         ->value('exchange_rate') ?? 4000;
 
+	$stamp_point_rules = $this->getStampPointRulesForSale($business_id);
+
+        $customer_stamp_points = $this->getCustomerStampPointsForSale($business_id);
+
+        $transaction_stamp_point = null;
+
+        $transaction_stamp_claims = [];
+
         return view('sell.create')
             ->with(compact(
                 'business_details',
@@ -2760,7 +2960,11 @@ public function updateCacheAfterDelete($business_id, $transaction_id, $sale_type
                 'users',
                 'default_price_group_id',
                 'change_return',
-                'exchange_rate'
+                'exchange_rate',
+		'stamp_point_rules',
+                'customer_stamp_points',
+                'transaction_stamp_point',
+                'transaction_stamp_claims',
             ));
     }
 
@@ -2993,6 +3197,10 @@ public function updateCacheAfterDelete($business_id, $transaction_id, $sale_type
         $status_color_in_activity = Transaction::sales_order_statuses();
         $sales_orders = $sell->salesOrders();
 
+	$transaction_stamp_point = TransactionStampPoint::where('business_id', $business_id)
+        ->where('transaction_id', $sell->id)
+        ->first();
+
         return view('sale_pos.show')
             ->with(compact(
                 'taxes',
@@ -3007,7 +3215,8 @@ public function updateCacheAfterDelete($business_id, $transaction_id, $sale_type
                 'statuses',
                 'status_color_in_activity',
                 'sales_orders',
-                'line_taxes'
+                'line_taxes',
+		'transaction_stamp_point'
             ));
     }
 
@@ -3347,9 +3556,29 @@ public function updateCacheAfterDelete($business_id, $transaction_id, $sale_type
         // Fetch exchange rate from transactions table and remove decimal part
         $exchange_rate = $transaction->exchange_rate ?? 4000;
         $exchange_rate = intval($exchange_rate);
+
+	$stamp_point_rules = $this->getStampPointRulesForSale($business_id);
+
+        $customer_stamp_points = $this->getCustomerStampPointsForSale($business_id);
+
+        $transaction_stamp_claims = $this->getTransactionStampClaimsForSale($business_id, $transaction->id);
+
+        $transaction_stamp_point = TransactionStampPoint::where('business_id', $business_id)
+            ->where('transaction_id', $transaction->id)
+            ->select(
+                DB::raw('SUM(balance_before) as balance_before'),
+                DB::raw('SUM(earned_point) as earned_point'),
+                DB::raw('SUM(claimed_point) as claimed_point'),
+                DB::raw('SUM(claim_qty) as claim_qty'),
+                DB::raw('SUM(balance_after) as balance_after')
+            )
+            ->first();
         
         return view('sell.edit')
-            ->with(compact('business_details', 'taxes', 'sell_details', 'transaction', 'commission_agent', 'types', 'customer_groups', 'pos_settings', 'waiters', 'invoice_schemes', 'default_invoice_schemes', 'redeem_details', 'edit_discount', 'edit_price', 'shipping_statuses', 'warranties', 'statuses', 'sales_orders', 'payment_types', 'accounts', 'payment_lines', 'change_return', 'is_order_request_enabled', 'customer_due', 'users','exchange_rate'));
+            ->with(compact('business_details', 'taxes', 'sell_details', 'transaction', 'commission_agent', 'types', 'customer_groups', 'pos_settings', 'waiters', 'invoice_schemes', 'default_invoice_schemes', 'redeem_details', 'edit_discount', 'edit_price', 'shipping_statuses', 'warranties', 'statuses', 'sales_orders', 'payment_types', 'accounts', 'payment_lines', 'change_return', 'is_order_request_enabled', 'customer_due', 'users','exchange_rate','stamp_point_rules',
+        'transaction_stamp_point',
+        'customer_stamp_points',
+        'transaction_stamp_claims'));
     }
 
     /**
@@ -4001,4 +4230,510 @@ public function clearCacheForExistingRecord($business_id, $transaction_id = null
         echo 'Mapping reset success';
         exit;
     }
+
+
+	   
+    private function getStampPointRulesForSale($business_id)
+{
+    return BusinessStampRule::leftJoin('products as p', 'business_stamp_rules.product_id', '=', 'p.id')
+        ->leftJoin('products as cp', 'business_stamp_rules.claim_product_id', '=', 'cp.id')
+        ->where('business_stamp_rules.business_id', $business_id)
+        ->where('business_stamp_rules.is_active', 1)
+        ->select(
+            'business_stamp_rules.product_id',
+            'business_stamp_rules.claim_product_id',
+            'business_stamp_rules.stamp_qty',
+            'business_stamp_rules.earn_point',
+            'business_stamp_rules.claim_qty',
+            DB::raw("CONCAT(p.name, IF(p.sku IS NOT NULL AND p.sku != '', CONCAT(' - ', p.sku), '')) as product_name"),
+            DB::raw("CONCAT(cp.name, IF(cp.sku IS NOT NULL AND cp.sku != '', CONCAT(' - ', cp.sku), '')) as claim_product_name")
+        )
+        ->orderBy('business_stamp_rules.stamp_qty', 'desc')
+        ->get()
+        ->groupBy('product_id')
+        ->map(function ($rules) {
+            return $rules->map(function ($rule) {
+                return [
+                    'product_id' => (int) $rule->product_id,
+                    'claim_product_id' => (int) $rule->claim_product_id,
+                    'stamp_qty' => (float) $rule->stamp_qty,
+                    'earn_point' => (float) $rule->earn_point,
+                    'claim_qty' => (float) $rule->claim_qty,
+                    'product_name' => $rule->product_name,
+                    'claim_product_name' => $rule->claim_product_name,
+                ];
+            })->values();
+        })
+        ->toArray();
+}
+
+private function getCustomerStampPointsForSale($business_id)
+{
+    return CustomerStampPointBalance::leftJoin('products as p', 'customer_stamp_point_balances.product_id', '=', 'p.id')
+        ->leftJoin('products as cp', 'customer_stamp_point_balances.claim_product_id', '=', 'cp.id')
+        ->where('customer_stamp_point_balances.business_id', $business_id)
+        ->select(
+            'customer_stamp_point_balances.contact_id',
+            'customer_stamp_point_balances.product_id',
+            'customer_stamp_point_balances.claim_product_id',
+            'customer_stamp_point_balances.point_balance',
+            'customer_stamp_point_balances.total_qty',
+            'customer_stamp_point_balances.claimed_qty',
+            'customer_stamp_point_balances.claimed_point',
+            DB::raw("CONCAT(p.name, IF(p.sku IS NOT NULL AND p.sku != '', CONCAT(' - ', p.sku), '')) as product_name"),
+            DB::raw("CONCAT(cp.name, IF(cp.sku IS NOT NULL AND cp.sku != '', CONCAT(' - ', cp.sku), '')) as claim_product_name")
+        )
+        ->get()
+        ->groupBy('contact_id')
+        ->map(function ($balances) {
+            return $balances->map(function ($balance) {
+                return [
+                    'contact_id' => (int) $balance->contact_id,
+                    'product_id' => (int) $balance->product_id,
+                    'claim_product_id' => (int) $balance->claim_product_id,
+                    'point_balance' => (float) $balance->point_balance,
+                    'total_qty' => (float) $balance->total_qty,
+                    'claimed_qty' => (float) $balance->claimed_qty,
+                    'claimed_point' => (float) $balance->claimed_point,
+                    'product_name' => $balance->product_name,
+                    'claim_product_name' => $balance->claim_product_name,
+                ];
+            })->values();
+        })
+        ->toArray();
+}
+
+private function getTransactionStampClaimsForSale($business_id, $transaction_id)
+{
+    return TransactionStampPoint::where('business_id', $business_id)
+        ->where('transaction_id', $transaction_id)
+        ->select(
+            'product_id',
+            'claim_product_id',
+            'balance_before',
+            'earned_point',
+            'claimed_point',
+            'claim_qty',
+            'balance_after'
+        )
+        ->get()
+        ->map(function ($row) {
+            return [
+                'product_id' => (int) $row->product_id,
+                'claim_product_id' => (int) $row->claim_product_id,
+                'balance_before' => (float) $row->balance_before,
+                'earned_point' => (float) $row->earned_point,
+                'claimed_point' => (float) $row->claimed_point,
+                'claim_qty' => (float) $row->claim_qty,
+                'balance_after' => (float) $row->balance_after,
+            ];
+        })
+        ->toArray();
+}
+private function saveCustomerStampPointBalance($transaction, $request, $is_update = false)
+{
+    $business = Business::find($transaction->business_id);
+
+    if (empty($business) || empty($business->enable_stamp_point)) {
+        return;
+    }
+
+    if (empty($transaction) || $transaction->type != 'sell' || $transaction->status != 'final') {
+        return;
+    }
+
+    if (empty($transaction->contact_id)) {
+        return;
+    }
+
+    $business_id = $transaction->business_id;
+    $contact_id = $transaction->contact_id;
+    $products = $request->input('products', []);
+
+    if ($is_update) {
+        $old_stamp_points = TransactionStampPoint::where('business_id', $business_id)
+            ->where('transaction_id', $transaction->id)
+            ->get();
+
+        foreach ($old_stamp_points as $old_stamp_point) {
+            if (empty($old_stamp_point->product_id) || empty($old_stamp_point->claim_product_id)) {
+                continue;
+            }
+
+            $old_balance = CustomerStampPointBalance::where('business_id', $business_id)
+                ->where('contact_id', $contact_id)
+                ->where('product_id', $old_stamp_point->product_id)
+                ->where('claim_product_id', $old_stamp_point->claim_product_id)
+                ->lockForUpdate()
+                ->first();
+
+            if (!empty($old_balance)) {
+                $old_balance->point_balance =
+                    $this->cleanStampPoint($old_balance->point_balance)
+                    - $this->cleanStampPoint($old_stamp_point->earned_point)
+                    + $this->cleanStampPoint($old_stamp_point->claimed_point);
+
+                if ($old_balance->point_balance < 0) {
+                    $old_balance->point_balance = 0;
+                }
+
+                $old_balance->save();
+            }
+        }
+
+        TransactionStampPoint::where('business_id', $business_id)
+            ->where('transaction_id', $transaction->id)
+            ->delete();
+    }
+
+    $stamp_rows = $this->buildStampPointRowsFromProducts($business_id, $products);
+
+    foreach ($stamp_rows as $row) {
+        $product_id = $row['product_id'];
+        $claim_product_id = $row['claim_product_id'];
+        $earned_point = $this->cleanStampPoint($row['earned_point']);
+        $claimed_point = $this->cleanStampPoint($row['claimed_point']);
+        $claim_qty = $this->cleanStampPoint($row['claim_qty']);
+
+        if ($earned_point <= 0 && $claimed_point <= 0) {
+            continue;
+        }
+
+        $balance = CustomerStampPointBalance::where('business_id', $business_id)
+            ->where('contact_id', $contact_id)
+            ->where('product_id', $product_id)
+            ->where('claim_product_id', $claim_product_id)
+            ->lockForUpdate()
+            ->first();
+
+        if (empty($balance)) {
+            $balance = CustomerStampPointBalance::create([
+                'business_id' => $business_id,
+                'contact_id' => $contact_id,
+                'product_id' => $product_id,
+                'claim_product_id' => $claim_product_id,
+                'point_balance' => 0,
+            ]);
+        }
+
+        $balance_before = $this->cleanStampPoint($balance->point_balance);
+
+        $available_for_claim = $balance_before + $earned_point;
+
+        if ($claimed_point > $available_for_claim) {
+            $claimed_point = $available_for_claim;
+
+            $claim_qty = $this->calculateStampByMaxRule(
+                $claimed_point,
+                $row['rules'],
+                'earn_point',
+                'claim_qty'
+            );
+        }
+        $balance_after = $balance_before + $earned_point - $claimed_point;
+
+        if ($balance_after < 0) {
+            $balance_after = 0;
+        }
+
+        $balance->point_balance = $balance_after;
+        $balance->save();
+
+        TransactionStampPoint::create([
+            'business_id' => $business_id,
+            'transaction_id' => $transaction->id,
+            'contact_id' => $contact_id,
+            'product_id' => $product_id,
+            'claim_product_id' => $claim_product_id,
+            'balance_before' => $balance_before,
+            'earned_point' => $earned_point,
+            'claimed_point' => $claimed_point,
+            'claim_qty' => $claim_qty,
+            'balance_after' => $balance_after,
+        ]);
+    }
+}
+
+private function buildStampPointRowsFromProducts($business_id, $products)
+{
+    $rows = [];
+
+    if (empty($products)) {
+        return $rows;
+    }
+
+    $product_qty = [];
+
+    foreach ($products as $product) {
+        if (empty($product['product_id']) || empty($product['quantity'])) {
+            continue;
+        }
+
+        $product_id = (int) $product['product_id'];
+        $qty = $this->cleanStampPoint($product['quantity']);
+
+        if ($qty <= 0) {
+            continue;
+        }
+
+        if (empty($product_qty[$product_id])) {
+            $product_qty[$product_id] = 0;
+        }
+
+        $product_qty[$product_id] += $qty;
+    }
+
+    if (empty($product_qty)) {
+        return $rows;
+    }
+
+    $rules = BusinessStampRule::where('business_id', $business_id)
+        ->where('is_active', 1)
+        ->select('product_id', 'claim_product_id', 'stamp_qty', 'earn_point', 'claim_qty')
+        ->orderBy('stamp_qty', 'desc')
+        ->get();
+
+    foreach ($rules->groupBy('product_id') as $product_id => $product_rules) {
+        foreach ($product_rules->groupBy('claim_product_id') as $claim_product_id => $claim_rules) {
+            $sale_qty = !empty($product_qty[(int) $product_id]) ? $product_qty[(int) $product_id] : 0;
+            $claim_qty = !empty($product_qty[(int) $claim_product_id]) ? $product_qty[(int) $claim_product_id] : 0;
+
+            if ($sale_qty <= 0 && $claim_qty <= 0) {
+                continue;
+            }
+
+            $key = $product_id . '_' . $claim_product_id;
+
+            $rows[$key] = [
+                'product_id' => (int) $product_id,
+                'claim_product_id' => (int) $claim_product_id,
+                'sale_qty' => $sale_qty,
+                'claim_qty' => $claim_qty,
+                'rules' => $claim_rules,
+            ];
+        }
+    }
+
+    return $rows;
+}
+
+private function calculateStampWithPendingQty($amount, $rules, $amountField, $resultField)
+{
+    $amount = $this->cleanStampPoint($amount);
+    $total_result = 0;
+    $remaining_amount = $amount;
+
+    $rules = collect($rules)->sortByDesc(function ($rule) use ($amountField) {
+        return $this->cleanStampPoint($rule->{$amountField});
+    });
+
+    foreach ($rules as $rule) {
+        $rule_amount = $this->cleanStampPoint($rule->{$amountField});
+        $rule_result = $this->cleanStampPoint($rule->{$resultField});
+
+        if ($rule_amount <= 0 || $rule_result <= 0 || $remaining_amount < $rule_amount) {
+            continue;
+        }
+
+        $times = floor($remaining_amount / $rule_amount);
+
+        $total_result += $times * $rule_result;
+        $remaining_amount = $remaining_amount - ($times * $rule_amount);
+    }
+
+    return [
+        'earned_point' => $total_result,
+        'pending_qty' => $remaining_amount,
+    ];
+}
+
+private function calculateClaimDeductPointPartial($claim_qty, $rules)
+{
+    $claim_qty = $this->cleanStampPoint($claim_qty);
+
+    if ($claim_qty <= 0) {
+        return 0;
+    }
+
+    $total_point = 0;
+    $remaining_qty = $claim_qty;
+
+    $rules_collection = collect($rules)->filter(function ($rule) {
+        return $this->cleanStampPoint($rule->claim_qty) > 0
+            && $this->cleanStampPoint($rule->earn_point) > 0;
+    });
+
+    $rules_desc = $rules_collection->sortByDesc(function ($rule) {
+        return $this->cleanStampPoint($rule->claim_qty);
+    });
+
+    foreach ($rules_desc as $rule) {
+        $rule_claim_qty = $this->cleanStampPoint($rule->claim_qty);
+        $rule_point = $this->cleanStampPoint($rule->earn_point);
+
+        if ($rule_claim_qty <= 0 || $rule_point <= 0 || $remaining_qty < $rule_claim_qty) {
+            continue;
+        }
+
+        $times = floor($remaining_qty / $rule_claim_qty);
+
+        $total_point += $times * $rule_point;
+        $remaining_qty = $remaining_qty - ($times * $rule_claim_qty);
+    }
+
+    if ($remaining_qty > 0) {
+        $smallest_rule = $rules_collection->sortBy(function ($rule) {
+            return $this->cleanStampPoint($rule->claim_qty);
+        })->first();
+
+        if (!empty($smallest_rule)) {
+            $smallest_claim_qty = $this->cleanStampPoint($smallest_rule->claim_qty);
+            $smallest_point = $this->cleanStampPoint($smallest_rule->earn_point);
+
+            if ($smallest_claim_qty > 0 && $smallest_point > 0) {
+                $point_per_qty = $smallest_point / $smallest_claim_qty;
+                $total_point += $remaining_qty * $point_per_qty;
+            }
+        }
+    }
+
+    return $total_point;
+}
+
+private function calculateClaimQtyFromPointPartial($point, $rules)
+{
+    $point = $this->cleanStampPoint($point);
+
+    if ($point <= 0) {
+        return 0;
+    }
+
+    $total_qty = 0;
+    $remaining_point = $point;
+
+    $rules_collection = collect($rules)->filter(function ($rule) {
+        return $this->cleanStampPoint($rule->claim_qty) > 0
+            && $this->cleanStampPoint($rule->earn_point) > 0;
+    });
+
+    $rules_desc = $rules_collection->sortByDesc(function ($rule) {
+        return $this->cleanStampPoint($rule->earn_point);
+    });
+
+    foreach ($rules_desc as $rule) {
+        $rule_point = $this->cleanStampPoint($rule->earn_point);
+        $rule_claim_qty = $this->cleanStampPoint($rule->claim_qty);
+
+        if ($rule_point <= 0 || $rule_claim_qty <= 0 || $remaining_point < $rule_point) {
+            continue;
+        }
+
+        $times = floor($remaining_point / $rule_point);
+
+        $total_qty += $times * $rule_claim_qty;
+        $remaining_point = $remaining_point - ($times * $rule_point);
+    }
+
+    if ($remaining_point > 0) {
+        $smallest_rule = $rules_collection->sortBy(function ($rule) {
+            return $this->cleanStampPoint($rule->earn_point);
+        })->first();
+
+        if (!empty($smallest_rule)) {
+            $smallest_point = $this->cleanStampPoint($smallest_rule->earn_point);
+            $smallest_claim_qty = $this->cleanStampPoint($smallest_rule->claim_qty);
+
+            if ($smallest_point > 0 && $smallest_claim_qty > 0) {
+                $qty_per_point = $smallest_claim_qty / $smallest_point;
+                $total_qty += $remaining_point * $qty_per_point;
+            }
+        }
+    }
+
+    return $total_qty;
+}
+
+private function calculateStampByMaxRule($amount, $rules, $amountField, $resultField)
+{
+    $amount = $this->cleanStampPoint($amount);
+    $total_result = 0;
+    $remaining_amount = $amount;
+
+    $rules = collect($rules)->sortByDesc(function ($rule) use ($amountField) {
+        return $this->cleanStampPoint($rule->{$amountField});
+    });
+
+    foreach ($rules as $rule) {
+        $rule_amount = $this->cleanStampPoint($rule->{$amountField});
+        $rule_result = $this->cleanStampPoint($rule->{$resultField});
+
+        if ($rule_amount <= 0 || $rule_result <= 0 || $remaining_amount < $rule_amount) {
+            continue;
+        }
+
+        $times = floor($remaining_amount / $rule_amount);
+
+        $total_result += $times * $rule_result;
+        $remaining_amount = $remaining_amount - ($times * $rule_amount);
+    }
+
+    return $total_result;
+}
+
+private function cleanStampPoint($value)
+{
+    $number = preg_replace('/[^0-9.]/', '', (string) $value);
+
+    return !empty($number) ? (float) $number : 0;
+}
+private function reverseTransactionStampPoints($transaction_id)
+{
+    $stamp_points = \DB::table('transaction_stamp_points')
+        ->where('transaction_id', $transaction_id)
+        ->get();
+
+    foreach ($stamp_points as $stamp_point) {
+        $balance = \DB::table('customer_stamp_point_balances')
+            ->where('business_id', $stamp_point->business_id)
+            ->where('contact_id', $stamp_point->contact_id)
+            ->where('product_id', $stamp_point->product_id)
+            ->where('claim_product_id', $stamp_point->claim_product_id)
+            ->lockForUpdate()
+            ->first();
+
+        if (!empty($balance)) {
+            $new_balance = (float) $balance->point_balance
+                - (float) $stamp_point->earned_point
+                + (float) $stamp_point->claimed_point;
+
+            if ($new_balance < 0) {
+                $new_balance = 0;
+            }
+
+            $current_pending_qty = !empty($balance->pending_qty) ? (float) $balance->pending_qty : 0;
+            $pending_before = !empty($stamp_point->pending_qty_before) ? (float) $stamp_point->pending_qty_before : 0;
+            $pending_after = !empty($stamp_point->pending_qty_after) ? (float) $stamp_point->pending_qty_after : 0;
+            $pending_delta = $pending_after - $pending_before;
+
+            $new_pending_qty = $current_pending_qty - $pending_delta;
+
+            if ($new_pending_qty < 0) {
+                $new_pending_qty = 0;
+            }
+
+            \DB::table('customer_stamp_point_balances')
+                ->where('id', $balance->id)
+                ->update([
+                    'point_balance' => $new_balance,
+                    'pending_qty' => $new_pending_qty,
+                    'updated_at' => now(),
+                ]);
+        }
+    }
+
+    \DB::table('transaction_stamp_points')
+        ->where('transaction_id', $transaction_id)
+        ->delete();
+}
+
 }

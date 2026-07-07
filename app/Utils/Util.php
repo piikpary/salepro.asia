@@ -66,6 +66,14 @@ class Util
 
         if ($is_quantity) {
             $currency_precision = ! empty($business_details) ? $business_details->quantity_precision : session('business.quantity_precision', 2);
+            // Preserve actual decimal digits even when system precision would round them (e.g. 0.5 with precision=0)
+            $n = (float) $input_number;
+            if ($n != floor($n)) {
+                $str = rtrim(rtrim(sprintf('%.10f', $n), '0'), '.');
+                $dot = strpos($str, '.');
+                $actual = ($dot !== false) ? (strlen($str) - $dot - 1) : 0;
+                $currency_precision = max($currency_precision, $actual);
+            }
         }
 
         $formatted = number_format($input_number, $currency_precision, $decimal_separator, $thousand_separator);

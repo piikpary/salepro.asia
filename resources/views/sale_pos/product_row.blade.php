@@ -291,78 +291,27 @@
 		{{-- Hidden fields for combo products --}}
 		{{-- Hidden fields for combo products --}}
 @if($product->product_type == 'combo' && !empty($product->combo_products))
-	@php
-		\Log::info('=== BLADE TEMPLATE - Processing Combo Product ===', [
-			'product_id' => $product->product_id,
-			'product_type' => $product->product_type,
-			'quantity_ordered' => $product->quantity_ordered,
-			'combo_products_count' => count($product->combo_products),
-			'exact_combo_data' => isset($exact_combo_data) ? $exact_combo_data : 'not_set',
-			'so_line_id' => isset($so_line) ? $so_line->id : 'not_set'
-		]);
-	@endphp
-
 	@foreach($product->combo_products as $k => $combo_product)
-		@php
-			\Log::info('=== BLADE TEMPLATE - Combo Product ' . $k . ' BEFORE calculation ===', [
-				'product_id' => $combo_product['product_id'],
-				'variation_id' => $combo_product['variation_id'],
-				'qty_required' => $combo_product['qty_required'],
-				'unit_id' => $combo_product['unit_id'] ?? 'not_set'
-			]);
-		@endphp
-
 		@if(isset($action) && $action == 'edit')
 			@php
 				$combo_product['qty_required'] = $combo_product['quantity'] / $product->quantity_ordered;
 				$qty_total = $combo_product['quantity'];
-				
-				\Log::info('=== BLADE TEMPLATE - EDIT MODE calculation ===', [
-					'qty_required' => $combo_product['qty_required'],
-					'qty_total' => $qty_total
-				]);
 			@endphp
 		@else
 			@php
 				// Check if we have exact combo data for this specific combo product
 				$qty_total = $combo_product['qty_required'];
-				$found_exact = false;
-				
+
 				if (!empty($exact_combo_data)) {
 					foreach ($exact_combo_data as $exact_combo) {
 						if ($exact_combo['variation_id'] == $combo_product['variation_id']) {
 							$qty_total = $exact_combo['quantity'];
-							$found_exact = true;
-							
-							\Log::info('=== BLADE TEMPLATE - Found EXACT combo data ===', [
-								'variation_id' => $combo_product['variation_id'],
-								'exact_quantity' => $exact_combo['quantity'],
-								'original_qty_required' => $combo_product['qty_required']
-							]);
 							break;
 						}
 					}
 				}
-				
-				if (!$found_exact) {
-					\Log::info('=== BLADE TEMPLATE - NO exact combo data, using original ===', [
-						'variation_id' => $combo_product['variation_id'],
-						'qty_required' => $combo_product['qty_required'],
-						'calculated_total' => $combo_product['qty_required']
-					]);
-				}
 			@endphp
 		@endif
-
-		@php
-			\Log::info('=== BLADE TEMPLATE - Combo Product ' . $k . ' FINAL VALUES ===', [
-				'product_id' => $combo_product['product_id'],
-				'variation_id' => $combo_product['variation_id'],
-				'qty_required' => $combo_product['qty_required'],
-				'qty_total' => $qty_total,
-				'will_be_saved_as' => $qty_total
-			]);
-		@endphp
 
 		<input type="hidden" 
 			name="products[{{$row_count}}][combo][{{$k}}][product_id]"
@@ -388,15 +337,6 @@
 @endif
 
 @if($product->product_type == 'combo_single' && !empty($product->combo_products))
-	@php
-		\Log::info('=== BLADE TEMPLATE - Processing Combo Single Product ===', [
-			'product_id' => $product->product_id,
-			'product_type' => $product->product_type,
-			'quantity_ordered' => $product->quantity_ordered,
-			'combo_products_count' => count($product->combo_products)
-		]);
-	@endphp
-
 	@foreach($product->combo_products as $k => $combo_product)
 
 		@if(isset($action) && $action == 'edit')
@@ -408,40 +348,17 @@
 			@php
 				// Check if we have exact combo data for this specific combo product
 				$qty_total = $combo_product['qty_required'];
-				$found_exact = false;
-				
+
 				if (!empty($exact_combo_data)) {
 					foreach ($exact_combo_data as $exact_combo) {
 						if ($exact_combo['variation_id'] == $combo_product['variation_id']) {
 							$qty_total = $exact_combo['quantity'];
-							$found_exact = true;
-							
-							\Log::info('=== BLADE TEMPLATE - Found EXACT combo_single data ===', [
-								'variation_id' => $combo_product['variation_id'],
-								'exact_quantity' => $exact_combo['quantity'],
-								'original_qty_required' => $combo_product['qty_required']
-							]);
 							break;
 						}
 					}
 				}
-				
-				if (!$found_exact) {
-					\Log::info('=== BLADE TEMPLATE - NO exact combo_single data, using original ===', [
-						'variation_id' => $combo_product['variation_id'],
-						'qty_required' => $combo_product['qty_required']
-					]);
-				}
 			@endphp
 		@endif
-
-		@php
-			\Log::info('=== BLADE TEMPLATE - Combo Single ' . $k . ' FINAL VALUES ===', [
-				'product_id' => $combo_product['product_id'],
-				'variation_id' => $combo_product['variation_id'],
-				'qty_total' => $qty_total
-			]);
-		@endphp
 
 		<input type="hidden" 
 			name="products[{{$row_count}}][combo_single][{{$k}}][product_id]"

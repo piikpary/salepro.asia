@@ -11,7 +11,7 @@
     }
 </style>
 <div class="row">
-	<div class="col-md-5">
+	<div class="col-md-4">
         <div class="form-group mb-0">
             <div class="input-group">
                 <span class="input-group-addon">
@@ -38,7 +38,20 @@
             <small class="text-danger hide contact_due_text"><strong>@lang('account.customer_due'):</strong> <span></span></small>
         </div>
     </div>
-    <div class="col-md-7">
+    <div class="col-md-2">
+        <div class="form-group mb-0">
+            <div class="input-group">
+                <span class="input-group-addon" title="Delivery Type">
+                    <i class="fa fa-truck"></i>
+                </span>
+                <select name="pos_status" id="pos_delivery_type" class="form-control" style="height:34px; padding:4px 8px;">
+                    <option value="pickup" {{ ($pos_delivery_default ?? 'pickup') === 'pickup' ? 'selected' : '' }}>Pickup</option>
+                    <option value="delivery" {{ ($pos_delivery_default ?? 'pickup') === 'delivery' ? 'selected' : '' }}>Delivery</option>
+                </select>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
         <div class="form-group mb-0"> <!-- Remove bottom margin from form-group -->
             <div class="input-group">
                 <div class="input-group-btn">
@@ -250,3 +263,11 @@
         </table>
     </div>
 </div>
+<script>
+$(document).on('change', '#pos_delivery_type', function() {
+    $.post('{{ route("pos.save_delivery_default") }}', {
+        pos_delivery_default: $(this).val(),
+        _token: '{{ csrf_token() }}'
+    });
+});
+</script>

@@ -622,16 +622,24 @@ class CustomerRingController extends Controller
             ->orderBy('sren.id', 'asc')
             ->get();
 
-        // ── Recalculate new_quantity as a running balance (oldest → newest) ──
-        $running_balance = 0;
-        $rows_with_balance = $rows->map(function ($row) use (&$running_balance) {
-            $running_balance += (float) $row->effective_qty;
-            $row->computed_new_quantity = $running_balance;
-            return $row;
-        });
+        // ── Get the authoritative current balance ───────────────────────────────
+        // We work BACKWARDS from the known current balance so that "New Quantity"
+        // always reconciles with stock_ring_balance_customer even when SP/direct
+        // adjustments touched that table without inserting rows here.
+        $current_balance = (float) (DB::table('stock_ring_balance_customer')
+            ->where('contact_id', $contact_id)
+            ->where('product_id', $product_id)
+            ->value('stock_ring_balance') ?? 0);
+
+        $rows_array  = $rows->values()->toArray();
+        $balance_after = $current_balance;
+        for ($i = count($rows_array) - 1; $i >= 0; $i--) {
+            $rows_array[$i]->computed_new_quantity = $balance_after;
+            $balance_after -= (float) $rows_array[$i]->effective_qty;
+        }
 
         // ── Reverse to show newest first in the table ────────────────────────
-        $rows_desc = $rows_with_balance->reverse()->values();
+        $rows_desc = collect(array_reverse($rows_array));
 
         $results = $rows_desc->map(function ($row) {
             $type_display = match($row->sren_type) {

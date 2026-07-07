@@ -85,7 +85,8 @@ class SaleVisitShareController extends ApiController
         $caption .= "Zone : {$zone}";
 
         if ($totalQty > 0) {
-            $caption .= "\n\nម៉ូយទី 1\n";
+            $sequence = $this->getDailyVisitSequence($visit);
+            $caption .= "\n\nម៉ូយទី {$sequence}\n";
             $caption .= "📦 Own vs Other Product\n";
             $caption .= "🟢 Own Product: {$ownPercent}%\n";
 
@@ -98,10 +99,27 @@ class SaleVisitShareController extends ApiController
                 $caption .= '  ' . ($i + 1) . '. ' . $line->product->name . ' : ' . (int) $line->quantity . "\n";
             }
 
+            if (!empty($visit->sale_latlong)) {
+                $caption .= "\n📍 Location: https://maps.google.com/?q=" . $visit->sale_latlong . "\n";
+            }
+
             $caption = rtrim($caption);
         }
 
         return $caption;
+    }
+
+    private function getDailyVisitSequence(TransactionVisit $visit): int
+    {
+        $visitDate = Carbon::parse($visit->transaction_date)->toDateString();
+
+        $sequence = TransactionVisit::where('business_id', $visit->business_id)
+            ->where('create_by', $visit->create_by)
+            ->whereDate('transaction_date', $visitDate)
+            ->where('id', '<=', $visit->id)
+            ->count();
+
+        return max(1, $sequence);
     }
 
     private function resolveCreatedBy(TransactionVisit $visit): string

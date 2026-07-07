@@ -70,6 +70,9 @@ use Stripe\Charge;
 use Stripe\Stripe;
 use Yajra\DataTables\Facades\DataTables;
 use App\Events\SellCreatedOrModified;
+use App\BusinessStampRule;
+use App\TransactionStampPoint;
+use App\CustomerStampPointBalance;
 
 class SellPosController extends Controller
 {
@@ -280,6 +283,21 @@ class SellPosController extends Controller
             ->where('currency_id', 21)
             ->value('exchange_rate') ?? 4000;
 
+        // Read user's saved delivery type default from users table
+        $pos_delivery_default = auth()->user()->pos_delivery_default ?? 'pickup';
+
+	$status = request()->get('status', '');
+        $sale_type = request()->get('sale_type', '');
+
+        $enabled_modules = !empty(session('business.enabled_modules'))
+            ? session('business.enabled_modules')
+            : [];
+
+        $stamp_point_rules = $this->getStampPointRulesForSale($business_id);
+        $customer_stamp_points = $this->getCustomerStampPointsForSale($business_id);
+        $transaction_stamp_point = null;
+        $transaction_stamp_claims = [];
+
         return view('sale_pos.create')
             ->with(compact(
                 'edit_discount',
@@ -314,8 +332,28 @@ class SellPosController extends Controller
                 'default_invoice_schemes',
                 'invoice_layouts',
                 'users',
-                'provinces', 'districts', 'communes','exchange_rate'
+                'provinces', 'districts', 'communes', 'exchange_rate',
+                'pos_delivery_default',
+		'status',
+                'sale_type',
+                'enabled_modules',
+                'stamp_point_rules',
+                'customer_stamp_points',
+                'transaction_stamp_point',
+                'transaction_stamp_claims',
             ));
+    }
+
+    public function saveDeliveryDefault(Request $request)
+    {
+        $type = $request->input('pos_delivery_default');
+        if (! in_array($type, ['pickup', 'delivery'])) {
+            return response()->json(['success' => false], 422);
+        }
+        DB::table('users')
+            ->where('id', auth()->user()->id)
+            ->update(['pos_delivery_default' => $type]);
+        return response()->json(['success' => true]);
     }
 
     public function getDistricts($province_id)
@@ -553,30 +591,9 @@ private function autoCreateRewardExchange($transaction, $input)
                     'updated_at' => now(),
                 ]);
 
-                // D. Physical Stock Update
-                if ($exchangeVariation && $receiveVariation) {
-                    $exchangeVLD = \App\VariationLocationDetails::firstOrNew([
-                        'variation_id' => $exchangeVariation->id,
-                        'location_id' => $location_id
-                    ]);
-                    $exchangeVLD->qty_available = ($exchangeVLD->qty_available ?? 0) + $exchangeQuantity;
-                    if(!$exchangeVLD->exists) {
-                        $exchangeVLD->product_id = $exchangeProductId;
-                        $exchangeVLD->product_variation_id = $exchangeVariation->product_variation_id;
-                    }
-                    $exchangeVLD->save();
-
-                    $receiveVLD = \App\VariationLocationDetails::firstOrNew([
-                        'variation_id' => $receiveVariation->id,
-                        'location_id' => $location_id
-                    ]);
-                    $receiveVLD->qty_available = ($receiveVLD->qty_available ?? 0) - $receiveQuantity;
-                    if(!$receiveVLD->exists) {
-                        $receiveVLD->product_id = $receiveProductId;
-                        $receiveVLD->product_variation_id = $receiveVariation->product_variation_id;
-                    }
-                    $receiveVLD->save();
-                }
+                // D. Physical Stock Update intentionally skipped:
+                // Stock is managed by DeliveryNote (cut) and DeliveryReturn (restore).
+                // Reward exchange only affects customer ring balance (stock_ring_balance_customer).
             }
 
             // Update TransactionSellLine with total used balance
@@ -764,11 +781,9 @@ private function syncRewardExchangeOnEdit($transaction, $business_id, $input)
                 ]);
 
                 // ── C. VariationLocationDetails – physical stock ─────────────
-                //
-                //   Exchange product (rings returned to shop):  qty += exchangeDiff
-                //   Receive product  (prizes given to customer): qty -= receiveDiff
-                //
-                if ($exchangeVariation && $receiveVariation) {
+                // Skip when sell came from a Delivery Note: stock is managed
+                // by the DN/DR flow; reward exchange only touches ring balance.
+                if ($exchangeVariation && $receiveVariation && empty($transaction->delivery_note_id)) {
                     $exVLD = \App\VariationLocationDetails::firstOrNew([
                         'variation_id' => $exchangeVariation->id,
                         'location_id'  => $location_id,
@@ -912,35 +927,35 @@ private function deleteRewardExchangeOnSellDestroy($transaction, $business_id)
                     // No record = nothing was deducted originally; nothing to restore.
 
                     // ── B. VariationLocationDetails – reverse physical stock ──
-                    //
-                    //   Exchange product: qty -= exchangeQuantity  (remove what was added back)
-                    //   Receive product:  qty += receiveQuantity   (restore what was taken out)
-                    //
-                    if ($exchangeVariation) {
-                        $exVLD = \App\VariationLocationDetails::where('variation_id', $exchangeVariation->id)
-                            ->where('location_id', $location_id)->first();
-                        if ($exVLD) {
-                            $exVLD->qty_available = ($exVLD->qty_available ?? 0) - $exchangeQuantity;
-                            $exVLD->save();
+                    // Skip when sell came from a Delivery Note: VLD was never
+                    // modified by the reward exchange (DN manages stock), so no reversal needed.
+                    if (empty($transaction->delivery_note_id)) {
+                        if ($exchangeVariation) {
+                            $exVLD = \App\VariationLocationDetails::where('variation_id', $exchangeVariation->id)
+                                ->where('location_id', $location_id)->first();
+                            if ($exVLD) {
+                                $exVLD->qty_available = ($exVLD->qty_available ?? 0) - $exchangeQuantity;
+                                $exVLD->save();
+                            }
                         }
-                    }
 
-                    if ($receiveVariation) {
-                        $rcVLD = \App\VariationLocationDetails::where('variation_id', $receiveVariation->id)
-                            ->where('location_id', $location_id)->first();
-                        if ($rcVLD) {
-                            $rcVLD->qty_available = ($rcVLD->qty_available ?? 0) + $receiveQuantity;
-                            $rcVLD->save();
-                        } else {
-                            $pvId = $receiveVariation->product_variation_id ?? null;
-                            if ($pvId) {
-                                \App\VariationLocationDetails::create([
-                                    'variation_id'         => $receiveVariation->id,
-                                    'location_id'          => $location_id,
-                                    'product_id'           => $receiveProductId,
-                                    'product_variation_id' => $pvId,
-                                    'qty_available'        => $receiveQuantity,
-                                ]);
+                        if ($receiveVariation) {
+                            $rcVLD = \App\VariationLocationDetails::where('variation_id', $receiveVariation->id)
+                                ->where('location_id', $location_id)->first();
+                            if ($rcVLD) {
+                                $rcVLD->qty_available = ($rcVLD->qty_available ?? 0) + $receiveQuantity;
+                                $rcVLD->save();
+                            } else {
+                                $pvId = $receiveVariation->product_variation_id ?? null;
+                                if ($pvId) {
+                                    \App\VariationLocationDetails::create([
+                                        'variation_id'         => $receiveVariation->id,
+                                        'location_id'          => $location_id,
+                                        'product_id'           => $receiveProductId,
+                                        'product_variation_id' => $pvId,
+                                        'qty_available'        => $receiveQuantity,
+                                    ]);
+                                }
                             }
                         }
                     }
@@ -1249,41 +1264,49 @@ private function deleteRewardExchangeOnSellDestroy($transaction, $business_id)
                         }
                     }
                 }
-                //update product stock
+                // Determine stock-cut strategy:
+                // - Sell from DN → skip direct cut; stock already cut by DN
+                // - Sell from SO → skip direct cut; auto-create DN (which cuts stock)
+                // - Direct sell → skip direct cut; auto-create DN (same as SO flow)
+                $is_from_so = ! empty($transaction->sales_order_ids);
+                $is_from_dn = ! empty($transaction->delivery_note_id)
+                           || ! empty($input['delivery_note_id'] ?? null);
+
+                // Stock is never cut directly on the sell — always via Delivery Note.
+                // (loop kept for any future per-line logic that does not affect stock)
                 foreach ($input['products'] as $product) {
                     $decrease_qty = $this->productUtil
                                 ->num_uf($product['quantity']);
                     if (! empty($product['base_unit_multiplier'])) {
                         $decrease_qty = $decrease_qty * $product['base_unit_multiplier'];
                     }
+                    // Direct stock cut removed; DN handles all stock movement.
+                }
 
-                    if ($product['enable_stock']) {
-                        $this->productUtil->decreaseProductQuantity(
-                            $product['product_id'],
-                            $product['variation_id'],
-                            $input['location_id'],
-                            $decrease_qty
-                        );
+                // Auto-create Delivery Note for every sell that is not already from a DN.
+                // Covers both: sell from SO, direct sell, and POS sell.
+                if (! $is_from_dn) {
+                    // pos_status only applies to POS transactions, not direct sells.
+                    // Direct sells always auto-create a delivered DN (pickup = immediate stock cut).
+                    $pos_status = (! $is_direct_sale && in_array($input['pos_status'] ?? '', ['pickup', 'delivery']))
+                        ? $input['pos_status'] : 'pickup';
+                    // Save pos_status on the transaction only for POS (not direct sell/SO)
+                    if (! $is_direct_sale) {
+                        DB::table('transactions')->where('id', $transaction->id)
+                            ->update(['pos_status' => $pos_status]);
                     }
-                 
-                    if ($product['product_type'] == 'combo_single') {
+                    $dn_id = $this->autoCreateDeliveryNoteFromSell($transaction, $input, $business_id, $pos_status);
+                    DB::table('transactions')->where('id', $transaction->id)
+                        ->update(['delivery_note_id' => $dn_id]);
+                    $transaction->delivery_note_id = $dn_id;
+                } elseif (! empty($input['delivery_note_id'])) {
+                    // Sell created from an existing DN → link them without creating a new DN
+                    DB::table('transactions')->where('id', $transaction->id)
+                        ->update(['delivery_note_id' => $input['delivery_note_id']]);
+                    $transaction->delivery_note_id = $input['delivery_note_id'];
 
-                        //Decrease quantity of combo as well.
-                        $this->productUtil
-                            ->decreaseProductQuantityComboSingle(
-                                $product['combo_single'],
-                                $input['location_id']
-                            );
-                    }
-
-                    if ($product['product_type'] == 'combo') {
-                        //Decrease quantity of combo as well.
-                        $this->productUtil
-                            ->decreaseProductQuantityCombo(
-                                $product['combo'],
-                                $input['location_id']
-                            );
-                    }
+                    // Auto-mark the DN as 'completed' and sync Sales Order status
+                    $this->completeDNAndSyncSO((int) $input['delivery_note_id'], $business_id);
                 }
 
                 // Save stock backup for final transactions
@@ -1329,8 +1352,22 @@ private function deleteRewardExchangeOnSellDestroy($transaction, $business_id)
 
             $this->transactionUtil->activityLog($transaction, 'added');
             if ($transaction->type == 'sell' && $input['status'] == 'final') {
+                // Reload sell_lines to ensure fresh data regardless of lazy-load cache state
+                $transaction->load('sell_lines');
                 $this->autoCreateRewardExchange($transaction, $input);
             }
+
+		$should_save_stamp_point = false;
+
+// Stamp point must be committed only from final Sale Invoice.
+// Sales Order and Delivery Note are preview only.
+if ($transaction->type == 'sell' && $input['status'] == 'final') {
+    $should_save_stamp_point = true;
+}
+
+if ($should_save_stamp_point) {
+    $this->saveCustomerStampPointBalance($transaction, $request, false);
+}
             DB::commit();
 
             SellCreatedOrModified::dispatch($transaction);
@@ -1399,6 +1436,15 @@ private function deleteRewardExchangeOnSellDestroy($transaction, $business_id)
         $output = ['success' => 0,
             'msg' => $msg,
         ];
+    }
+
+    // Save user's last-used delivery type so POS page pre-selects it on next load
+    if (! $is_direct_sale && ($output['success'] ?? 0) == 1) {
+        $pos_status_saved = $input['pos_status'] ?? null;
+        if (in_array($pos_status_saved, ['pickup', 'delivery'])) {
+            DB::table('users')->where('id', auth()->user()->id)
+                ->update(['pos_delivery_default' => $pos_status_saved]);
+        }
     }
 
     if (! $is_direct_sale) {
@@ -1516,7 +1562,7 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
      * @param  string  $printer_type = null
      * @return array
      */
-    private function receiptContent(
+    public function receiptContent(
         $business_id,
         $location_id,
         $transaction_id,
@@ -1524,7 +1570,8 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
         $is_package_slip = false,
         $from_pos_screen = true,
         $invoice_layout_id = null,
-        $is_delivery_note = false
+        $is_delivery_note = false,
+        $override_heading = null
     ) {
         $output = ['is_enabled' => false,
             'print_type' => 'browser',
@@ -1558,6 +1605,10 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
         ];
         $receipt_details->currency = $currency_details;
 
+        if (!empty($override_heading)) {
+            $receipt_details->invoice_heading = $override_heading;
+        }
+
         if ($is_package_slip) {
             $output['html_content'] = view('sale_pos.receipts.packing_slip', compact('receipt_details'))->render();
 
@@ -1581,8 +1632,23 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
            
             $layout = ! empty($receipt_details->design) ? 'sale_pos.receipts.'.$receipt_details->design : 'sale_pos.receipts.classic';
             // $layout = ! empty($receipt_details->design) ? 'sale_pos.receipts.slim' : 'sale_pos.receipts.slim';
-          
+
             $output['html_content'] = view($layout, compact('receipt_details'))->render();
+
+            if (!empty($invoice_layout->rotate_90)) {
+                $output['rotate_90'] = 1;
+            } else {
+                // Also check the other layout (sale_invoice_layout_id or invoice_layout_id) for rotate_90
+                $alt_id = ($invoice_layout_id == $location_details->invoice_layout_id)
+                    ? ($location_details->sale_invoice_layout_id ?? null)
+                    : $location_details->invoice_layout_id;
+                if (!empty($alt_id) && $alt_id != $invoice_layout_id) {
+                    $alt_layout = \App\InvoiceLayout::find($alt_id);
+                    if (!empty($alt_layout->rotate_90)) {
+                        $output['rotate_90'] = 1;
+                    }
+                }
+            }
         }
 
         return $output;
@@ -1924,6 +1990,31 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
         //Added check because $users is of no use if enable_contact_assign if false
         $users = config('constants.enable_contact_assign') ? User::forDropdown($business_id, false, false, false, true) : [];
         $only_payment = request()->segment(2) == 'payment';
+
+	 $enabled_modules = !empty(session('business.enabled_modules'))
+        ? session('business.enabled_modules')
+        : [];
+
+        $exchange_rate = !empty($transaction->exchange_rate)
+            ? intval($transaction->exchange_rate)
+            : (MiddleCurrency::where('store_id', $business_id)
+                ->where('currency_id', 21)
+                ->value('exchange_rate') ?? 4000);
+
+        $stamp_point_rules = $this->getStampPointRulesForSale($business_id);
+        $customer_stamp_points = $this->getCustomerStampPointsForSale($business_id);
+        $transaction_stamp_claims = $this->getTransactionStampClaimsForSale($business_id, $transaction->id);
+
+        $transaction_stamp_point = TransactionStampPoint::where('business_id', $business_id)
+            ->where('transaction_id', $transaction->id)
+            ->select(
+                DB::raw('SUM(balance_before) as balance_before'),
+                DB::raw('SUM(earned_point) as earned_point'),
+                DB::raw('SUM(claimed_point) as claimed_point'),
+                DB::raw('SUM(claim_qty) as claim_qty'),
+                DB::raw('SUM(balance_after) as balance_after')
+            )
+            ->first();
        
         return view('sale_pos.edit')
             ->with(compact('business_details', 'taxes', 'payment_types', 'walk_in_customer',
@@ -1932,7 +2023,13 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
             'brands', 'accounts', 'waiters', 'redeem_details', 'edit_price', 'edit_discount',
             'shipping_statuses', 'warranties', 'sub_type', 'pos_module_data', 'invoice_schemes',
             'default_invoice_schemes', 'invoice_layouts', 'featured_products', 'customer_due',
-            'users', 'only_payment','currency'));
+            'users', 'only_payment','currency','exchange_rate',
+            'stamp_point_rules',
+            'customer_stamp_points',
+            'transaction_stamp_point',
+            'transaction_stamp_claims',
+		'enabled_modules',
+));
     }
 
     /**
@@ -2375,7 +2472,47 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
 
                 // ✅ ADD THIS LINE HERE — after createOrUpdateSellLines, before commit
                 $this->syncRewardExchangeOnEdit($transaction, $business_id, $input);
-                
+
+                // Auto-sync or auto-create the linked delivery note
+                if ($transaction->status === 'final') {
+                    $sell_db = DB::table('transactions')->where('id', $transaction->id)->first();
+                    $linked_dn_id = $sell_db->delivery_note_id ?? null;
+
+                    // pos_status only applies to POS transactions, not direct sells.
+                    $new_pos_status = 'pickup';
+                    if (! $is_direct_sale) {
+                        $new_pos_status = in_array($input['pos_status'] ?? '', ['pickup', 'delivery'])
+                            ? $input['pos_status']
+                            : ($sell_db->pos_status ?? 'pickup');
+
+                        if ($new_pos_status !== $sell_db->pos_status) {
+                            DB::table('transactions')->where('id', $transaction->id)
+                                ->update(['pos_status' => $new_pos_status]);
+                        }
+                    }
+
+                    // pickup → DN delivered (stock cut), delivery → DN ordered (no stock cut)
+                    $new_dn_status = $new_pos_status === 'delivery' ? 'ordered' : 'delivered';
+
+                    if (! empty($linked_dn_id)) {
+                        // Sell already has a linked DN — sync it if it was auto-created (not 'completed')
+                        $linked_dn = DB::table('transactions')
+                            ->where('id', $linked_dn_id)
+                            ->where('type', 'delivery_note')
+                            ->whereNull('deleted_at')
+                            ->first();
+                        if ($linked_dn && $linked_dn->status !== 'completed') {
+                            $this->autoSyncDeliveryNoteFromSell($transaction, $input, $business_id, $linked_dn, $new_dn_status);
+                        }
+                    } elseif ($status_before !== 'final' && empty($input['delivery_note_id'])) {
+                        // Draft→Final with no existing DN and not created-from-a-DN → auto-create
+                        $new_dn_id = $this->autoCreateDeliveryNoteFromSell($transaction, $input, $business_id, $new_pos_status);
+                        DB::table('transactions')->where('id', $transaction->id)
+                            ->update(['delivery_note_id' => $new_dn_id]);
+                        $transaction->delivery_note_id = $new_dn_id;
+                    }
+                }
+
                 DB::commit();
 
                 $this->quickCacheUpdateEdit($business_id, $transaction, $transaction_before);
@@ -2531,6 +2668,34 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
 
                 DB::beginTransaction();
 
+                // Auto-delete linked delivery note when sell is deleted
+                // Only applies to auto-created DNs (sells with delivery_note_id set)
+                if (!empty($transaction->delivery_note_id)) {
+                    $dn = DB::table('transactions')
+                        ->where('id', $transaction->delivery_note_id)
+                        ->whereNull('deleted_at')
+                        ->first();
+
+                    if ($dn) {
+                        // Revert stock if DN was already delivered/completed
+                        if (in_array($dn->status, ['delivered', 'completed'])) {
+                            $dn_lines = DB::table('transaction_sell_lines')
+                                ->where('transaction_id', $dn->id)
+                                ->get();
+                            foreach ($dn_lines as $dn_line) {
+                                DB::table('variation_location_details')
+                                    ->where('variation_id', $dn_line->variation_id)
+                                    ->where('product_id', $dn_line->product_id)
+                                    ->where('location_id', $dn->location_id)
+                                    ->increment('qty_available', $dn_line->quantity);
+                            }
+                        }
+                        // Hard-delete DN sell lines, then soft-delete the DN
+                        DB::table('transaction_sell_lines')->where('transaction_id', $dn->id)->delete();
+                        DB::table('transactions')->where('id', $dn->id)->update(['deleted_at' => now()]);
+                    }
+                }
+
                 // ✅ uses soft delete in TransactionUtil
                 $output = $this->transactionUtil->deleteSale($business_id, $id);
 
@@ -2561,24 +2726,75 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
     
     public function getSalesOrderLines()
     {
-        $business_id = request()->session()->get('user.business_id');
+        $business_id    = request()->session()->get('user.business_id');
         $sales_order_id = request()->input('sales_order_id');
-        $row_count = request()->get('product_row');
-        $row_count = $row_count + 1;
-        
+        // Req 3: dn_id can come from JS (pos.js AJAX param) or session fallback
+        $dn_id = request()->input('dn_id') ?: session('pending_dn_id_for_sell');
+        // Clear session once consumed so it doesn't affect future calls
+        if (!empty($dn_id) && !request()->input('dn_id')) {
+            session()->forget('pending_dn_id_for_sell');
+        }
+        $row_count      = request()->get('product_row');
+        $row_count      = $row_count + 1;
+
+        // Build a map of returned qty per (product_id, variation_id) from all DRs linked to this DN
+        $drReturnMap = [];
+        if (!empty($dn_id)) {
+            $drLines = DB::table('transaction_sell_lines as tsl')
+                ->join('transactions as t', 'tsl.transaction_id', '=', 't.id')
+                ->where('t.delivery_note_id', $dn_id)
+                ->where('t.type', 'delivery_return')
+                ->whereNull('t.deleted_at')
+                ->whereNull('tsl.parent_sell_line_id')
+                ->select('tsl.product_id', 'tsl.variation_id', DB::raw('SUM(tsl.quantity) as total_returned'))
+                ->groupBy('tsl.product_id', 'tsl.variation_id')
+                ->get();
+            foreach ($drLines as $dr) {
+                $key = $dr->product_id . '_' . $dr->variation_id;
+                $drReturnMap[$key] = (float) $dr->total_returned;
+            }
+        }
+
         $sales_order = Transaction::where('business_id', $business_id)
                                 ->where('type', 'sales_order')
                                 ->with(['sell_lines'])
                                 ->find($sales_order_id);
-        
+
         $html = '<table>';
         $all_sell_lines = []; // Store ALL sell lines with exact quantities
-        
+
         if (!empty($sales_order)) {
-            // Log all sell lines from sales order
+            // Pre-compute ratio for each parent line (DR-adjusted qty / original qty)
+            // Used to scale combo children proportionally
+            $parentRatios = []; // sell_line_id => ratio
+            if (!empty($dn_id)) {
+                foreach ($sales_order->sell_lines as $sell_line) {
+                    if (is_null($sell_line->parent_sell_line_id)) {
+                        $original = max(0, (float)($sell_line->quantity - $sell_line->so_quantity_invoiced));
+                        $key = $sell_line->product_id . '_' . $sell_line->variation_id;
+                        $returned = $drReturnMap[$key] ?? 0;
+                        $adjusted = max(0, $original - $returned);
+                        $parentRatios[$sell_line->id] = $original > 0 ? ($adjusted / $original) : 0;
+                    }
+                }
+            }
+
             \Log::info('=== DEBUG getSalesOrderLines - All Sell Lines ===');
             foreach ($sales_order->sell_lines as $sell_line) {
                 $remaining_quantity = $sell_line->quantity - $sell_line->so_quantity_invoiced;
+
+                // Req 3: adjust parent qty by DR returns
+                if (!empty($dn_id) && is_null($sell_line->parent_sell_line_id)) {
+                    $key = $sell_line->product_id . '_' . $sell_line->variation_id;
+                    $returned = $drReturnMap[$key] ?? 0;
+                    $remaining_quantity = max(0, $remaining_quantity - $returned);
+                }
+
+                // Req 3: scale combo children proportionally with parent ratio
+                if (!empty($dn_id) && !is_null($sell_line->parent_sell_line_id)) {
+                    $ratio = $parentRatios[$sell_line->parent_sell_line_id] ?? 1;
+                    $remaining_quantity = round($remaining_quantity * $ratio, 4);
+                }
                 
                 \Log::info('Sell Line ID: ' . $sell_line->id, [
                     'variation_id' => $sell_line->variation_id,
@@ -2610,7 +2826,14 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
             // Only process main products (not combo sub-products) for the visible table
             foreach ($sales_order->sell_lines as $sell_line) {
                 $quantity = $sell_line->quantity - $sell_line->so_quantity_invoiced;
-                
+
+                // Req 3: subtract DR returned qty from DN when selling from DN
+                if (!empty($dn_id) && is_null($sell_line->parent_sell_line_id)) {
+                    $key = $sell_line->product_id . '_' . $sell_line->variation_id;
+                    $returned = $drReturnMap[$key] ?? 0;
+                    $quantity = max(0, $quantity - $returned);
+                }
+
                 // Only process main products with remaining quantity
                 if ($quantity > 0 && is_null($sell_line->parent_sell_line_id)) {
                     $sell_line->qty_available = $quantity;
@@ -2639,12 +2862,18 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
                     $exact_combo_data = [];
                     if (in_array($product_type, ['combo', 'combo_single'])) {
                         \Log::info('=== Found Combo Product - Looking for Sub Products ===');
-                        
+                        $parentRatio = isset($parentRatios) ? ($parentRatios[$sell_line->id] ?? 1) : 1;
+
                         // Find all combo sub-products for this main product
                         foreach ($sales_order->sell_lines as $sub_line) {
                             if ($sub_line->parent_sell_line_id == $sell_line->id) {
                                 $sub_remaining_qty = $sub_line->quantity - $sub_line->so_quantity_invoiced;
-                                
+
+                                // Scale combo child proportionally when coming from DN with DR
+                                if (!empty($dn_id)) {
+                                    $sub_remaining_qty = round($sub_remaining_qty * $parentRatio, 4);
+                                }
+
                                 \Log::info('Found Sub Product', [
                                     'sub_line_id' => $sub_line->id,
                                     'variation_id' => $sub_line->variation_id,
@@ -2653,11 +2882,11 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
                                     'so_quantity_invoiced' => $sub_line->so_quantity_invoiced,
                                     'sub_remaining_qty' => $sub_remaining_qty
                                 ]);
-                                
+
                                 $exact_combo_data[] = [
                                     'variation_id' => $sub_line->variation_id,
-                                    'quantity' => $sub_remaining_qty, // Keep EXACT remaining quantity
-                                    'unit_quantity_override' => true // Flag to indicate this is exact quantity
+                                    'quantity' => $sub_remaining_qty, // DR-adjusted quantity
+                                    'unit_quantity_override' => true
                                 ];
                             }
                         }
@@ -2694,10 +2923,125 @@ private function quickCacheDelete($business_id, $transaction_id, $sale_type = 's
             'all_sell_lines' => $all_sell_lines
         ]);
         
+        // ── Detect reward-exchange adjustable groups ──────────────────────────────
+        // When selling from a DN, products that share the same "end product" via
+        // reward_exchange (product_for_sale) or combo (combo child) form a group
+        // whose combined qty is fixed = sum of their individual delivered quantities.
+        // The client uses this to allow redistribution via +/- while keeping the
+        // group total capped.
+        $dn_groups = [];
+        if (!empty($dn_id) && !empty($sales_order)) {
+            $biz_id_grp = request()->session()->get('user.business_id');
+
+            // Collect parent lines with their DR-adjusted quantities
+            $parentLines = []; // variation_id => [product_id, adjusted_qty]
+            foreach ($sales_order->sell_lines as $sl) {
+                if (!is_null($sl->parent_sell_line_id)) {
+                    continue;
+                }
+                $key      = $sl->product_id . '_' . $sl->variation_id;
+                $original = max(0.0, (float) ($sl->quantity - $sl->so_quantity_invoiced));
+                $returned = $drReturnMap[$key] ?? 0;
+                $adjusted = max(0.0, $original - $returned);
+                if ($adjusted > 0) {
+                    $parentLines[$sl->variation_id] = [
+                        'product_id'   => $sl->product_id,
+                        'adjusted_qty' => $adjusted,
+                    ];
+                }
+            }
+
+            $parentProductIds = array_column($parentLines, 'product_id');
+
+            // Reward-exchange rules whose product_for_sale is one of the SO products
+            $rewardRules = DB::table('rewards_exchange')
+                ->whereIn('product_for_sale', $parentProductIds)
+                ->where('business_id', $biz_id_grp)
+                ->whereNull('deleted_at')
+                ->get(['product_for_sale', 'receive_product']);
+
+            $productToReceive  = [];  // product_for_sale_id → receive_product_id
+            $receiveProductIds = [];
+            foreach ($rewardRules as $rule) {
+                $productToReceive[$rule->product_for_sale] = $rule->receive_product;
+                $receiveProductIds[] = $rule->receive_product;
+            }
+            $receiveProductIds = array_unique($receiveProductIds);
+
+            // Combo products in the SO whose child product_id is a receive_product
+            $comboParentToReceive = []; // parent_product_id → receive_product_id
+            foreach ($sales_order->sell_lines as $sl) {
+                if (is_null($sl->parent_sell_line_id)) {
+                    continue;
+                }
+                if (!in_array($sl->product_id, $receiveProductIds)) {
+                    continue;
+                }
+                $parentLine = $sales_order->sell_lines->firstWhere('id', $sl->parent_sell_line_id);
+                if ($parentLine) {
+                    $comboParentToReceive[$parentLine->product_id] = $sl->product_id;
+                }
+            }
+
+            // Build groups: receive_product_id → [variation_ids]
+            $groupsByReceive = [];
+            foreach ($parentLines as $varId => $info) {
+                $productId = $info['product_id'];
+                // Product is product_for_sale in rewards_exchange
+                if (isset($productToReceive[$productId])) {
+                    $groupsByReceive[$productToReceive[$productId]][] = $varId;
+                    continue;
+                }
+                // Product is a combo whose child = receive_product
+                if (isset($comboParentToReceive[$productId])) {
+                    $groupsByReceive[$comboParentToReceive[$productId]][] = $varId;
+                }
+            }
+
+            // Emit dn_groups only for groups with 2+ members
+            foreach ($groupsByReceive as $receiveId => $varIds) {
+                if (count($varIds) < 2) {
+                    continue;
+                }
+                $groupMax = 0;
+                foreach ($varIds as $v) {
+                    $groupMax += $parentLines[$v]['adjusted_qty'] ?? 0;
+                }
+                foreach ($varIds as $v) {
+                    $dn_groups[(string) $v] = [
+                        'group_id'  => $receiveId,
+                        'group_max' => $groupMax,
+                    ];
+                }
+            }
+        }
+
+        // DN sell lines — needed client-side to detect reward_exchange groups.
+        // The SO has no reward_exchange children (added only at DN creation), so we
+        // must pass the DN lines separately.
+        $dn_sell_lines = [];
+        if (!empty($dn_id)) {
+            $rawDnLines = DB::table('transaction_sell_lines')
+                ->where('transaction_id', $dn_id)
+                ->get(['id', 'variation_id', 'quantity', 'parent_sell_line_id', 'children_type'])
+                ->toArray();
+            foreach ($rawDnLines as $dl) {
+                $dn_sell_lines[] = [
+                    'id'                  => $dl->id,
+                    'variation_id'        => $dl->variation_id,
+                    'quantity'            => (float) $dl->quantity,
+                    'parent_sell_line_id' => $dl->parent_sell_line_id,
+                    'children_type'       => $dl->children_type,
+                ];
+            }
+        }
+
         return [
-            'html' => $html,
-            'sales_order' => $sales_order,
-            'all_sell_lines' => $all_sell_lines // Include ALL sell lines with exact quantities
+            'html'           => $html,
+            'sales_order'    => $sales_order,
+            'all_sell_lines' => $all_sell_lines,
+            'dn_groups'      => $dn_groups,
+            'dn_sell_lines'  => $dn_sell_lines,
         ];
     }
 
@@ -4700,4 +5044,1226 @@ private function getCustomerGroupPriceInternal($product_id, $selling_price_group
 
         return ['success' => true];
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Auto-create a Delivery Note (status = delivered) when a sell is created
+    // ─────────────────────────────────────────────────────────────────────────
+    // Mark an existing DN as 'completed' and sync the linked Sales Order status.
+    // Called when a sell invoice is created from an existing Delivery Note.
+    // ─────────────────────────────────────────────────────────────────────────
+    private function completeDNAndSyncSO(int $dn_id, int $business_id): void
+    {
+        $dn = DB::table('transactions')
+            ->where('id', $dn_id)
+            ->where('type', 'delivery_note')
+            ->whereNull('deleted_at')
+            ->first();
+
+        if (!$dn) return;
+
+        // Mark DN completed
+        if ($dn->status !== 'completed') {
+            DB::table('transactions')
+                ->where('id', $dn_id)
+                ->update(['status' => 'completed', 'updated_at' => now()]);
+        }
+
+        // Sync Sales Order status if DN is linked to one
+        if (empty($dn->sales_order_id)) return;
+
+        $so_id = (int) $dn->sales_order_id;
+
+        $so_lines = DB::table('transaction_sell_lines')
+            ->where('transaction_id', $so_id)
+            ->whereNull('parent_sell_line_id')
+            ->select('product_id', 'variation_id', 'quantity as ordered_qty')
+            ->get();
+
+        $all_full     = true;
+        $any_delivered = false;
+
+        foreach ($so_lines as $so_line) {
+            $delivered = DB::table('transaction_sell_lines as tsl')
+                ->join('transactions as t', 'tsl.transaction_id', '=', 't.id')
+                ->where('t.sales_order_id', $so_id)
+                ->where('t.type', 'delivery_note')
+                ->whereIn('t.status', ['delivered', 'completed'])
+                ->whereNull('t.deleted_at')
+                ->where('tsl.product_id', $so_line->product_id)
+                ->where('tsl.variation_id', $so_line->variation_id)
+                ->whereNull('tsl.parent_sell_line_id')
+                ->sum('tsl.quantity');
+
+            if ($delivered > 0) $any_delivered = true;
+            if ($delivered < $so_line->ordered_qty) $all_full = false;
+        }
+
+        $new_so_status = $all_full ? 'completed' : ($any_delivered ? 'partial' : 'ordered');
+
+        DB::table('transactions')
+            ->where('id', $so_id)
+            ->where('type', 'sales_order')
+            ->update(['status' => $new_so_status, 'updated_at' => now()]);
+    }
+
+    // (direct sell or from Sales Order). Stock is cut via the DN, never the sell.
+    // ─────────────────────────────────────────────────────────────────────────
+    private function autoCreateDeliveryNoteFromSell($transaction, array $input, int $business_id, string $pos_status = 'pickup'): int
+    {
+        // pickup → DN status 'delivered' (stock cut immediately)
+        // delivery → DN status 'ordered' (no stock cut yet)
+        $dn_status = $pos_status === 'delivery' ? 'ordered' : 'delivered';
+
+        $year     = \Carbon\Carbon::now()->year;
+        $dn_count = DB::table('transactions')
+            ->where('business_id', $business_id)
+            ->where('type', 'delivery_note')
+            ->whereYear('created_at', $year)
+            ->count();
+        $dn_no = 'DN' . $year . '/' . str_pad($dn_count + 1, 4, '0', STR_PAD_LEFT);
+
+        // Parse first SO id from sales_order_ids (JSON array or plain value)
+        $so_ids_raw = $transaction->sales_order_ids;
+        $so_ids     = is_string($so_ids_raw) ? json_decode($so_ids_raw, true) : (array) $so_ids_raw;
+        $so_id      = (is_array($so_ids) && ! empty($so_ids)) ? (int) reset($so_ids) : null;
+
+        $dn_id = DB::table('transactions')->insertGetId([
+            'business_id'      => $business_id,
+            'location_id'      => $input['location_id'],
+            'type'             => 'delivery_note',
+            'status'           => $dn_status,
+            'contact_id'       => $transaction->contact_id,
+            'invoice_no'       => $dn_no,
+            'transaction_date' => now(),
+            'sales_order_id'   => $so_id,
+            'final_total'      => $transaction->final_total,
+            'total_before_tax' => $transaction->total_before_tax,
+            'created_by'       => auth()->id(),
+            'created_at'       => now(),
+            'updated_at'       => now(),
+        ]);
+
+        // Create DN lines + cut stock for each product
+        foreach ($input['products'] as $product) {
+            $qty = (float) $this->productUtil->num_uf($product['quantity']);
+            if (! empty($product['base_unit_multiplier'])) {
+                $qty = $qty * $product['base_unit_multiplier'];
+            }
+            if ($qty <= 0) continue;
+
+            $unit_price  = (float) $this->productUtil->num_uf($product['unit_price'] ?? 0);
+            $product_type = $product['product_type'] ?? 'single';
+            $is_combo     = in_array($product_type, ['combo', 'combo_single']);
+
+            // Insert parent DN line
+            $parent_dn_line_id = DB::table('transaction_sell_lines')->insertGetId([
+                'transaction_id'             => $dn_id,
+                'product_id'                 => $product['product_id'],
+                'variation_id'               => $product['variation_id'],
+                'quantity'                   => $qty,
+                'unit_price'                 => $unit_price,
+                'unit_price_before_discount' => $unit_price,
+                'unit_price_inc_tax'         => $unit_price,
+                'sub_unit_id'                => $product['sub_unit_id'] ?? null,
+                'so_line_id'                 => $product['so_line_id'] ?? null,
+                'so_quantity_invoiced'        => $qty,
+                'item_tax'                   => 0,
+                'line_discount_type'         => null,
+                'line_discount_amount'       => 0,
+                'created_at'                 => now(),
+                'updated_at'                 => now(),
+            ]);
+
+            // Check if this product has a reward_exchange rule (product_for_sale)
+            // If yes: parent stock is NOT cut — only the receive_product child cuts stock
+            $rewardRules = DB::table('rewards_exchange')
+                ->where('product_for_sale', $product['product_id'])
+                ->where('business_id', $business_id)
+                ->whereNull('deleted_at')
+                ->get();
+            $has_reward_exchange = $rewardRules->isNotEmpty();
+
+            // Cut stock only when DN is delivered (pickup mode).
+            // ordered (delivery mode) means no stock cut yet.
+            // Single product: cut parent stock directly
+            // Combo / combo_single / reward_exchange: parent is virtual — only children cut stock
+            if ($dn_status === 'delivered' && ! $is_combo && ! $has_reward_exchange && ! empty($product['enable_stock'])) {
+                $this->productUtil->decreaseProductQuantity(
+                    $product['product_id'],
+                    $product['variation_id'],
+                    $input['location_id'],
+                    $qty
+                );
+            }
+
+            // Insert reward_exchange child lines into DN + cut receive_product stock
+            if ($has_reward_exchange) {
+                foreach ($rewardRules as $rule) {
+                    $receiveVariation = DB::table('variations')
+                        ->where('product_id', $rule->receive_product)
+                        ->first();
+                    if (! $receiveVariation) continue;
+
+                    $child_qty = $qty * (float) $rule->receive_quantity;
+                    if ($child_qty <= 0) continue;
+
+                    DB::table('transaction_sell_lines')->insert([
+                        'transaction_id'             => $dn_id,
+                        'product_id'                 => $rule->receive_product,
+                        'variation_id'               => $receiveVariation->id,
+                        'quantity'                   => $child_qty,
+                        'unit_price'                 => 0,
+                        'unit_price_before_discount' => 0,
+                        'unit_price_inc_tax'         => 0,
+                        'item_tax'                   => 0,
+                        'line_discount_type'         => null,
+                        'line_discount_amount'       => 0,
+                        'parent_sell_line_id'        => $parent_dn_line_id,
+                        'children_type'              => 'reward_exchange',
+                        'so_quantity_invoiced'       => 0,
+                        'created_at'                 => now(),
+                        'updated_at'                 => now(),
+                    ]);
+
+                    // Cut receive_product stock only when DN is delivered
+                    if ($dn_status === 'delivered') {
+                        $receiveProduct = DB::table('products')
+                            ->where('id', $rule->receive_product)
+                            ->first();
+                        if ($receiveProduct && $receiveProduct->enable_stock) {
+                            $this->productUtil->decreaseProductQuantity(
+                                $rule->receive_product,
+                                $receiveVariation->id,
+                                $input['location_id'],
+                                $child_qty
+                            );
+                        }
+                    }
+                }
+            }
+
+            if ($product_type === 'combo_single') {
+                // Insert combo_single children into DN sell lines
+                $children = $product['combo_single'] ?? [];
+                foreach ((array) $children as $child) {
+                    $child_qty = (float) ($child['quantity'] ?? $child['qty'] ?? 0);
+                    if ($child_qty <= 0) continue;
+                    DB::table('transaction_sell_lines')->insert([
+                        'transaction_id'             => $dn_id,
+                        'product_id'                 => $child['product_id'],
+                        'variation_id'               => $child['variation_id'],
+                        'quantity'                   => $child_qty,
+                        'unit_price'                 => 0,
+                        'unit_price_before_discount' => 0,
+                        'unit_price_inc_tax'         => 0,
+                        'item_tax'                   => 0,
+                        'line_discount_type'         => null,
+                        'line_discount_amount'       => 0,
+                        'parent_sell_line_id'        => $parent_dn_line_id,
+                        'children_type'              => 'combo_single',
+                        'so_quantity_invoiced'        => 0,
+                        'created_at'                 => now(),
+                        'updated_at'                 => now(),
+                    ]);
+                }
+                if ($dn_status === 'delivered') {
+                    $this->productUtil->decreaseProductQuantityComboSingle(
+                        $children,
+                        $input['location_id']
+                    );
+                }
+            }
+
+            if ($product_type === 'combo') {
+                // Insert combo children into DN sell lines
+                $children = $product['combo'] ?? [];
+                foreach ((array) $children as $child) {
+                    $child_qty = (float) ($child['quantity'] ?? 0);
+                    if ($child_qty <= 0) continue;
+                    DB::table('transaction_sell_lines')->insert([
+                        'transaction_id'             => $dn_id,
+                        'product_id'                 => $child['product_id'],
+                        'variation_id'               => $child['variation_id'],
+                        'quantity'                   => $child_qty,
+                        'unit_price'                 => 0,
+                        'unit_price_before_discount' => 0,
+                        'unit_price_inc_tax'         => 0,
+                        'item_tax'                   => 0,
+                        'line_discount_type'         => null,
+                        'line_discount_amount'       => 0,
+                        'parent_sell_line_id'        => $parent_dn_line_id,
+                        'children_type'              => 'combo',
+                        'so_quantity_invoiced'        => 0,
+                        'created_at'                 => now(),
+                        'updated_at'                 => now(),
+                    ]);
+                }
+                if ($dn_status === 'delivered') {
+                    $this->productUtil->decreaseProductQuantityCombo(
+                        $children,
+                        $input['location_id']
+                    );
+                }
+            }
+        }
+
+        // Log activity
+        try {
+            DB::table('delivery_note_activities')->insert([
+                'transaction_id' => $dn_id,
+                'action'         => 'Auto-created from Sell',
+                'by'             => auth()->user()->username ?? auth()->user()->name,
+                'note'           => 'Auto-generated when sell invoice ' . ($transaction->invoice_no ?? '') . ' was created' . ($so_id ? ' from sales order.' : ' (direct sell/POS).') . ' DN status: ' . $dn_status . '.',
+                'created_at'     => now(),
+            ]);
+        } catch (\Exception $e) {
+            // Activity log failure should not break the transaction
+        }
+
+        return $dn_id;
+    }
+
+    private function autoSyncDeliveryNoteFromSell($transaction, array $input, int $business_id, $dn, string $new_dn_status = null): void
+    {
+        $dn_id         = $dn->id;
+        $old_dn_status = $dn->status;                      // what the DN WAS (for revert decision)
+        $new_dn_status = $new_dn_status ?? $old_dn_status; // what the DN WILL BE (for cut decision)
+        $location_id   = $input['location_id'];
+
+        // If Delivery Type changed, update the DN status header now
+        if ($new_dn_status !== $old_dn_status) {
+            DB::table('transactions')->where('id', $dn_id)
+                ->update(['status' => $new_dn_status, 'updated_at' => now()]);
+        }
+
+        // Step 1: Load all old DN lines BEFORE deleting.
+        // For combo products we derive new child quantities from the old ratio
+        // rather than relying on form-submitted combo hidden fields (which may be
+        // stale or absent in POS edit mode).
+        $old_all_lines = DB::table('transaction_sell_lines')
+            ->where('transaction_id', $dn_id)
+            ->get();
+
+        // Parent lines indexed by variation_id for quick lookup
+        $old_parents = $old_all_lines
+            ->filter(fn($l) => is_null($l->parent_sell_line_id))
+            ->keyBy('variation_id');
+
+        // Children grouped by their parent line ID
+        $old_children_by_parent = $old_all_lines
+            ->filter(fn($l) => ! is_null($l->parent_sell_line_id))
+            ->groupBy('parent_sell_line_id');
+
+        // Step 2: Revert stock for all old DN lines if DN WAS delivered (old status).
+        // Combo parents with enable_stock=0 have no VLD row → increment is a no-op.
+        if ($old_dn_status === 'delivered') {
+            foreach ($old_all_lines as $line) {
+                $qty = (float) $line->quantity;
+                if ($qty <= 0) continue;
+                DB::table('variation_location_details')
+                    ->where('variation_id', $line->variation_id)
+                    ->where('product_id', $line->product_id)
+                    ->where('location_id', $location_id)
+                    ->increment('qty_available', $qty);
+            }
+        }
+
+        // Step 3: Delete old DN lines
+        DB::table('transaction_sell_lines')->where('transaction_id', $dn_id)->delete();
+
+        // Step 4: Insert new DN lines
+        foreach ($input['products'] as $product) {
+            $new_parent_qty = (float) $this->productUtil->num_uf($product['quantity']);
+            if (! empty($product['base_unit_multiplier'])) {
+                $new_parent_qty = $new_parent_qty * $product['base_unit_multiplier'];
+            }
+            if ($new_parent_qty <= 0) continue;
+
+            $variation_id = $product['variation_id'];
+            $unit_price   = (float) $this->productUtil->num_uf($product['unit_price'] ?? 0);
+            $product_type = $product['product_type'] ?? 'single';
+            $is_combo     = in_array($product_type, ['combo', 'combo_single']);
+
+            $rewardRules = DB::table('rewards_exchange')
+                ->where('product_for_sale', $product['product_id'])
+                ->where('business_id', $business_id)
+                ->whereNull('deleted_at')
+                ->get();
+            $has_reward_exchange = $rewardRules->isNotEmpty();
+
+            // Insert new parent DN line
+            $new_parent_line_id = DB::table('transaction_sell_lines')->insertGetId([
+                'transaction_id'             => $dn_id,
+                'product_id'                 => $product['product_id'],
+                'variation_id'               => $variation_id,
+                'quantity'                   => $new_parent_qty,
+                'unit_price'                 => $unit_price,
+                'unit_price_before_discount' => $unit_price,
+                'unit_price_inc_tax'         => $unit_price,
+                'sub_unit_id'                => $product['sub_unit_id'] ?? null,
+                'so_line_id'                 => $product['so_line_id'] ?? null,
+                'so_quantity_invoiced'        => $new_parent_qty,
+                'item_tax'                   => 0,
+                'line_discount_type'         => null,
+                'line_discount_amount'       => 0,
+                'created_at'                 => now(),
+                'updated_at'                 => now(),
+            ]);
+
+            // Single product: cut stock directly
+            if ($new_dn_status === 'delivered' && ! $is_combo && ! $has_reward_exchange && ! empty($product['enable_stock'])) {
+                $this->productUtil->decreaseProductQuantity(
+                    $product['product_id'], $variation_id, $location_id, $new_parent_qty
+                );
+            }
+
+            // Combo / combo_single: derive new child quantities from old DN lines
+            // (ratio = new_parent_qty / old_parent_qty).
+            // This is reliable in all POS/direct-sell edit scenarios.
+            if ($is_combo) {
+                $old_parent = $old_parents->get($variation_id);
+                if ($old_parent) {
+                    $old_parent_qty = (float) $old_parent->quantity;
+                    $ratio = $old_parent_qty > 0 ? $new_parent_qty / $old_parent_qty : 1.0;
+
+                    $old_children = $old_children_by_parent->get($old_parent->id, collect());
+                    foreach ($old_children as $old_child) {
+                        $new_child_qty = (float) $old_child->quantity * $ratio;
+                        if ($new_child_qty <= 0) continue;
+
+                        DB::table('transaction_sell_lines')->insert([
+                            'transaction_id'             => $dn_id,
+                            'product_id'                 => $old_child->product_id,
+                            'variation_id'               => $old_child->variation_id,
+                            'quantity'                   => $new_child_qty,
+                            'unit_price'                 => 0,
+                            'unit_price_before_discount' => 0,
+                            'unit_price_inc_tax'         => 0,
+                            'item_tax'                   => 0,
+                            'line_discount_type'         => null,
+                            'line_discount_amount'       => 0,
+                            'parent_sell_line_id'        => $new_parent_line_id,
+                            'children_type'              => $old_child->children_type,
+                            'so_quantity_invoiced'       => 0,
+                            'created_at'                 => now(),
+                            'updated_at'                 => now(),
+                        ]);
+
+                        if ($new_dn_status === 'delivered') {
+                            DB::table('variation_location_details')
+                                ->where('variation_id', $old_child->variation_id)
+                                ->where('product_id', $old_child->product_id)
+                                ->where('location_id', $location_id)
+                                ->decrement('qty_available', $new_child_qty);
+                        }
+                    }
+                } else {
+                    // New combo product not previously in this DN — fall back to form data
+                    $form_children = $product_type === 'combo_single'
+                        ? ($product['combo_single'] ?? [])
+                        : ($product['combo'] ?? []);
+                    foreach ((array) $form_children as $child) {
+                        $child_qty = (float) ($child['quantity'] ?? $child['qty'] ?? 0);
+                        if ($child_qty <= 0) continue;
+                        DB::table('transaction_sell_lines')->insert([
+                            'transaction_id'             => $dn_id,
+                            'product_id'                 => $child['product_id'],
+                            'variation_id'               => $child['variation_id'],
+                            'quantity'                   => $child_qty,
+                            'unit_price'                 => 0,
+                            'unit_price_before_discount' => 0,
+                            'unit_price_inc_tax'         => 0,
+                            'item_tax'                   => 0,
+                            'line_discount_type'         => null,
+                            'line_discount_amount'       => 0,
+                            'parent_sell_line_id'        => $new_parent_line_id,
+                            'children_type'              => $product_type,
+                            'so_quantity_invoiced'       => 0,
+                            'created_at'                 => now(),
+                            'updated_at'                 => now(),
+                        ]);
+                        if ($new_dn_status === 'delivered') {
+                            DB::table('variation_location_details')
+                                ->where('variation_id', $child['variation_id'])
+                                ->where('product_id', $child['product_id'])
+                                ->where('location_id', $location_id)
+                                ->decrement('qty_available', $child_qty);
+                        }
+                    }
+                }
+            }
+
+            // Reward exchange children
+            if ($has_reward_exchange) {
+                foreach ($rewardRules as $rule) {
+                    $receiveVariation = DB::table('variations')
+                        ->where('product_id', $rule->receive_product)
+                        ->first();
+                    if (! $receiveVariation) continue;
+
+                    $child_qty = $new_parent_qty * (float) $rule->receive_quantity;
+                    if ($child_qty <= 0) continue;
+
+                    DB::table('transaction_sell_lines')->insert([
+                        'transaction_id'             => $dn_id,
+                        'product_id'                 => $rule->receive_product,
+                        'variation_id'               => $receiveVariation->id,
+                        'quantity'                   => $child_qty,
+                        'unit_price'                 => 0,
+                        'unit_price_before_discount' => 0,
+                        'unit_price_inc_tax'         => 0,
+                        'item_tax'                   => 0,
+                        'line_discount_type'         => null,
+                        'line_discount_amount'       => 0,
+                        'parent_sell_line_id'        => $new_parent_line_id,
+                        'children_type'              => 'reward_exchange',
+                        'so_quantity_invoiced'       => 0,
+                        'created_at'                 => now(),
+                        'updated_at'                 => now(),
+                    ]);
+
+                    if ($new_dn_status === 'delivered') {
+                        $receiveProduct = DB::table('products')
+                            ->where('id', $rule->receive_product)
+                            ->first();
+                        if ($receiveProduct && $receiveProduct->enable_stock) {
+                            $this->productUtil->decreaseProductQuantity(
+                                $rule->receive_product, $receiveVariation->id, $location_id, $child_qty
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 5: Update DN header totals
+        DB::table('transactions')->where('id', $dn_id)->update([
+            'final_total'      => $transaction->final_total,
+            'total_before_tax' => $transaction->total_before_tax,
+            'updated_at'       => now(),
+        ]);
+
+        try {
+            DB::table('delivery_note_activities')->insert([
+                'transaction_id' => $dn_id,
+                'action'         => 'Auto-synced from Sell Edit',
+                'by'             => auth()->user()->username ?? auth()->user()->name,
+                'note'           => 'Auto-synced when sell invoice ' . ($transaction->invoice_no ?? '') . ' was updated.',
+                'created_at'     => now(),
+            ]);
+        } catch (\Exception $e) {
+            // Activity log failure should not break the transaction
+        }
+    }
+
+
+  
+   private function saveCustomerStampPointBalance($transaction, $request, $is_update = false)
+{
+    $business = Business::find($transaction->business_id);
+
+    if (empty($business) || empty($business->enable_stamp_point)) {
+        return;
+    }
+
+    if (empty($transaction)) {
+    return;
+    }
+
+    $is_final_sell = $transaction->type == 'sell' && $transaction->status == 'final';
+
+if (! $is_final_sell) {
+    return;
+}
+
+    if (empty($transaction->contact_id)) {
+        return;
+    }
+
+    $business_id = $transaction->business_id;
+    $contact_id = $transaction->contact_id;
+
+    if ($is_update) {
+        $this->reverseTransactionStampPoints($transaction->id);
+    }
+
+    $products = $request->input('products', []);
+    $stamp_rows = $this->buildStampPointRowsFromProducts($business_id, $products);
+
+    if (empty($stamp_rows)) {
+        return;
+    }
+
+    foreach ($stamp_rows as $row) {
+        $product_id = (int) $row['product_id'];
+        $claim_product_id = (int) $row['claim_product_id'];
+        $sale_qty = $this->cleanStampPoint($row['sale_qty']);
+        $input_claim_qty = $this->cleanStampPoint($row['claim_qty']);
+        $rules = $row['rules'];
+
+        if (empty($product_id) || empty($claim_product_id)) {
+            continue;
+        }
+
+        $balance = CustomerStampPointBalance::where('business_id', $business_id)
+            ->where('contact_id', $contact_id)
+            ->where('product_id', $product_id)
+            ->where('claim_product_id', $claim_product_id)
+            ->lockForUpdate()
+            ->first();
+
+        if (empty($balance)) {
+            $balance = CustomerStampPointBalance::create([
+                'business_id' => $business_id,
+                'contact_id' => $contact_id,
+                'product_id' => $product_id,
+                'claim_product_id' => $claim_product_id,
+                'total_qty' => 0,
+                'claimed_qty' => 0,
+                'claimed_point' => 0,
+                'point_balance' => 0,
+            ]);
+        }
+
+        $balance_before = $this->cleanStampPoint($balance->point_balance);
+        $total_qty_before = $this->cleanStampPoint($balance->total_qty);
+        $claimed_qty_before = $this->cleanStampPoint($balance->claimed_qty);
+        $claimed_point_before = $this->cleanStampPoint($balance->claimed_point);
+
+        $eligible_point_before = $this->calculateEligiblePointByCycle($total_qty_before, $rules);
+
+        $total_qty_after = $total_qty_before + $sale_qty;
+
+        $eligible_point_after = $this->calculateEligiblePointByCycle($total_qty_after, $rules);
+        $eligible_claim_qty_after = $this->calculateEligibleClaimQtyByCycle($eligible_point_after, $rules);
+
+        $earned_point = $eligible_point_after - $eligible_point_before;
+
+        if ($earned_point < 0) {
+            $earned_point = 0;
+        }
+
+        $available_point_for_claim = $balance_before + $earned_point;
+        $available_claim_qty_for_claim = $eligible_claim_qty_after - $claimed_qty_before;
+
+        if ($available_claim_qty_for_claim < 0) {
+            $available_claim_qty_for_claim = 0;
+        }
+
+        $claim_qty = $input_claim_qty;
+
+        if ($claim_qty > $available_claim_qty_for_claim) {
+            $claim_qty = $available_claim_qty_for_claim;
+        }
+
+        $claimed_point = $this->calculateClaimPointByAvailableRatio(
+            $claim_qty,
+            $available_point_for_claim,
+            $available_claim_qty_for_claim
+        );
+
+        if ($claimed_point > $available_point_for_claim) {
+            $claimed_point = $available_point_for_claim;
+        }
+
+        $claimed_qty_after = $claimed_qty_before + $claim_qty;
+        $claimed_point_after = $claimed_point_before + $claimed_point;
+
+        $balance_after = $balance_before + $earned_point - $claimed_point;
+
+        if ($balance_after < 0) {
+            $balance_after = 0;
+        }
+
+        if ($sale_qty <= 0 && $claim_qty <= 0 && $earned_point <= 0 && $claimed_point <= 0) {
+            continue;
+        }
+
+        $balance->total_qty = $total_qty_after;
+        $balance->claimed_qty = $claimed_qty_after;
+        $balance->claimed_point = $claimed_point_after;
+        $balance->point_balance = $balance_after;
+        $balance->save();
+
+        TransactionStampPoint::create([
+            'business_id' => $business_id,
+            'transaction_id' => $transaction->id,
+            'contact_id' => $contact_id,
+            'product_id' => $product_id,
+            'claim_product_id' => $claim_product_id,
+            'sale_qty' => $sale_qty,
+            'total_qty_before' => $total_qty_before,
+            'total_qty_after' => $total_qty_after,
+            'claimed_qty_before' => $claimed_qty_before,
+            'claimed_qty_after' => $claimed_qty_after,
+            'balance_before' => $balance_before,
+            'earned_point' => $earned_point,
+            'claimed_point' => $claimed_point,
+            'claim_qty' => $claim_qty,
+            'balance_after' => $balance_after,
+        ]);
+    }
+}
+private function calculateStampEarnPointFromProducts($business_id, $products)
+{
+    if (empty($products)) {
+        return 0;
+    }
+
+    $rules = BusinessStampRule::where('business_id', $business_id)
+        ->where('is_active', 1)
+        ->select('product_id', 'stamp_qty', 'earn_point', 'claim_qty')
+        ->orderBy('stamp_qty', 'desc')
+        ->get()
+        ->groupBy('product_id');
+
+    $total_earn_point = 0;
+
+    foreach ($products as $product) {
+        if (empty($product['product_id']) || empty($product['quantity'])) {
+            continue;
+        }
+
+        $product_id = $product['product_id'];
+        $qty = $this->cleanStampPoint($product['quantity']);
+
+        if ($qty <= 0 || empty($rules[$product_id])) {
+            continue;
+        }
+
+        $total_earn_point += $this->calculateStampByMaxRule(
+            $qty,
+            $rules[$product_id],
+            'stamp_qty',
+            'earn_point'
+        );
+    }
+
+    return $total_earn_point;
+}
+
+private function calculateStampClaimQtyFromProducts($business_id, $products, $claim_point)
+{
+    $claim_point = $this->cleanStampPoint($claim_point);
+
+    if ($claim_point <= 0 || empty($products)) {
+        return 0;
+    }
+
+    $rules = BusinessStampRule::where('business_id', $business_id)
+        ->where('is_active', 1)
+        ->select('product_id', 'stamp_qty', 'earn_point', 'claim_qty')
+        ->orderBy('earn_point', 'desc')
+        ->get()
+        ->groupBy('product_id');
+
+    foreach ($products as $product) {
+        if (empty($product['product_id'])) {
+            continue;
+        }
+
+        $product_id = $product['product_id'];
+
+        if (empty($rules[$product_id])) {
+            continue;
+        }
+
+        return $this->calculateStampByMaxRule(
+            $claim_point,
+            $rules[$product_id],
+            'earn_point',
+            'claim_qty'
+        );
+    }
+
+    return 0;
+}
+private function buildStampPointRowsFromProducts($business_id, $products)
+{
+    $rows = [];
+
+    if (empty($products)) {
+        return $rows;
+    }
+
+    $product_qty = [];
+
+    foreach ($products as $product) {
+        if (empty($product['product_id']) || empty($product['quantity'])) {
+            continue;
+        }
+
+        $product_id = (int) $product['product_id'];
+        $qty = $this->cleanStampPoint($product['quantity']);
+
+        if ($qty <= 0) {
+            continue;
+        }
+
+        if (empty($product_qty[$product_id])) {
+            $product_qty[$product_id] = 0;
+        }
+
+        $product_qty[$product_id] += $qty;
+    }
+
+    if (empty($product_qty)) {
+        return $rows;
+    }
+
+    $rules = BusinessStampRule::where('business_id', $business_id)
+        ->where('is_active', 1)
+        ->select('product_id', 'claim_product_id', 'stamp_qty', 'earn_point', 'claim_qty')
+        ->orderBy('stamp_qty', 'desc')
+        ->get();
+
+    foreach ($rules->groupBy('product_id') as $product_id => $product_rules) {
+        foreach ($product_rules->groupBy('claim_product_id') as $claim_product_id => $claim_rules) {
+            $sale_qty = !empty($product_qty[(int) $product_id]) ? $product_qty[(int) $product_id] : 0;
+            $claim_qty = !empty($product_qty[(int) $claim_product_id]) ? $product_qty[(int) $claim_product_id] : 0;
+
+            if ($sale_qty <= 0 && $claim_qty <= 0) {
+                continue;
+            }
+
+            $key = $product_id . '_' . $claim_product_id;
+
+            $rows[$key] = [
+                'product_id' => (int) $product_id,
+                'claim_product_id' => (int) $claim_product_id,
+                'sale_qty' => $sale_qty,
+                'claim_qty' => $claim_qty,
+                'rules' => $claim_rules,
+            ];
+        }
+    }
+
+    return $rows;
+}
+
+private function calculateEligibleClaimQtyByCycle($total_point, $rules)
+{
+    $total_point = (int) floor($this->cleanStampPoint($total_point));
+
+    if ($total_point <= 0 || empty($rules)) {
+        return 0;
+    }
+
+    $rule_map = [];
+
+    foreach ($rules as $rule) {
+        $rule_point = (int) floor($this->cleanStampPoint($rule->earn_point ?? 0));
+        $claim_qty = $this->cleanStampPoint($rule->claim_qty ?? 0);
+
+        if ($rule_point <= 0 || $claim_qty <= 0) {
+            continue;
+        }
+
+        if (!isset($rule_map[$rule_point]) || $claim_qty > $rule_map[$rule_point]) {
+            $rule_map[$rule_point] = $claim_qty;
+        }
+    }
+
+    if (empty($rule_map)) {
+        return 0;
+    }
+
+    $dp = array_fill(0, $total_point + 1, 0);
+
+    for ($point = 1; $point <= $total_point; $point++) {
+        foreach ($rule_map as $rule_point => $claim_qty) {
+            if ($point >= $rule_point) {
+                $dp[$point] = max(
+                    $dp[$point],
+                    $dp[$point - $rule_point] + $claim_qty
+                );
+            }
+        }
+    }
+
+    return $dp[$total_point];
+}
+private function calculateEligiblePointByCycle($total_qty, $rules)
+{
+    $total_qty = $this->cleanStampPoint($total_qty);
+    $rules = collect($rules)->sortBy('stamp_qty')->values();
+
+    if ($total_qty <= 0 || $rules->isEmpty()) {
+        return 0;
+    }
+
+    $max_rule = $rules->sortByDesc('stamp_qty')->first();
+
+    $max_cycle_qty = $this->cleanStampPoint($max_rule->stamp_qty);
+    $max_cycle_point = $this->cleanStampPoint($max_rule->earn_point);
+
+    if ($max_cycle_qty <= 0 || $max_cycle_point <= 0) {
+        return 0;
+    }
+
+    $full_cycle = floor($total_qty / $max_cycle_qty);
+    $remainder = fmod($total_qty, $max_cycle_qty);
+
+    $point_from_cycle = $full_cycle * $max_cycle_point;
+    $point_from_remainder = 0;
+
+    foreach ($rules as $rule) {
+        $rule_qty = $this->cleanStampPoint($rule->stamp_qty);
+        $rule_point = $this->cleanStampPoint($rule->earn_point);
+
+        if ($rule_qty <= $remainder) {
+            $point_from_remainder = $rule_point;
+        }
+    }
+
+    return $point_from_cycle + $point_from_remainder;
+}
+
+private function calculateClaimPointByAvailableRatio($claim_qty, $available_point, $available_claim_qty)
+{
+    $claim_qty = $this->cleanStampPoint($claim_qty);
+    $available_point = $this->cleanStampPoint($available_point);
+    $available_claim_qty = $this->cleanStampPoint($available_claim_qty);
+
+    if ($claim_qty <= 0 || $available_point <= 0 || $available_claim_qty <= 0) {
+        return 0;
+    }
+
+    $point_per_claim_qty = $available_point / $available_claim_qty;
+
+    return $claim_qty * $point_per_claim_qty;
+}
+
+private function cleanStampPoint($value)
+{
+    $number = preg_replace('/[^0-9.]/', '', (string) $value);
+
+    return !empty($number) ? (float) $number : 0;
+}
+
+private function calculateStampWithPendingQty($amount, $rules, $amountField, $resultField)
+{
+    $amount = $this->cleanStampPoint($amount);
+    $total_result = 0;
+    $remaining_amount = $amount;
+
+    $rules = collect($rules)->sortByDesc(function ($rule) use ($amountField) {
+        return $this->cleanStampPoint($rule->{$amountField});
+    });
+
+    foreach ($rules as $rule) {
+        $rule_amount = $this->cleanStampPoint($rule->{$amountField});
+        $rule_result = $this->cleanStampPoint($rule->{$resultField});
+
+        if ($rule_amount <= 0 || $rule_result <= 0 || $remaining_amount < $rule_amount) {
+            continue;
+        }
+
+        $times = floor($remaining_amount / $rule_amount);
+
+        $total_result += $times * $rule_result;
+        $remaining_amount = $remaining_amount - ($times * $rule_amount);
+    }
+
+    return [
+        'earned_point' => $total_result,
+        'pending_qty' => $remaining_amount,
+    ];
+}
+
+private function calculateClaimDeductPointPartial($claim_qty, $rules)
+{
+    $claim_qty = $this->cleanStampPoint($claim_qty);
+
+    if ($claim_qty <= 0) {
+        return 0;
+    }
+
+    $total_point = 0;
+    $remaining_qty = $claim_qty;
+
+    $rules_collection = collect($rules)->filter(function ($rule) {
+        return $this->cleanStampPoint($rule->claim_qty) > 0
+            && $this->cleanStampPoint($rule->earn_point) > 0;
+    });
+
+    $rules_desc = $rules_collection->sortByDesc(function ($rule) {
+        return $this->cleanStampPoint($rule->claim_qty);
+    });
+
+    foreach ($rules_desc as $rule) {
+        $rule_claim_qty = $this->cleanStampPoint($rule->claim_qty);
+        $rule_point = $this->cleanStampPoint($rule->earn_point);
+
+        if ($rule_claim_qty <= 0 || $rule_point <= 0 || $remaining_qty < $rule_claim_qty) {
+            continue;
+        }
+
+        $times = floor($remaining_qty / $rule_claim_qty);
+
+        $total_point += $times * $rule_point;
+        $remaining_qty = $remaining_qty - ($times * $rule_claim_qty);
+    }
+
+    if ($remaining_qty > 0) {
+        $smallest_rule = $rules_collection->sortBy(function ($rule) {
+            return $this->cleanStampPoint($rule->claim_qty);
+        })->first();
+
+        if (!empty($smallest_rule)) {
+            $smallest_claim_qty = $this->cleanStampPoint($smallest_rule->claim_qty);
+            $smallest_point = $this->cleanStampPoint($smallest_rule->earn_point);
+
+            if ($smallest_claim_qty > 0 && $smallest_point > 0) {
+                $point_per_qty = $smallest_point / $smallest_claim_qty;
+                $total_point += $remaining_qty * $point_per_qty;
+            }
+        }
+    }
+
+    return $total_point;
+}
+
+private function calculateClaimQtyFromPointPartial($point, $rules)
+{
+    $point = $this->cleanStampPoint($point);
+
+    if ($point <= 0) {
+        return 0;
+    }
+
+    $total_qty = 0;
+    $remaining_point = $point;
+
+    $rules_collection = collect($rules)->filter(function ($rule) {
+        return $this->cleanStampPoint($rule->claim_qty) > 0
+            && $this->cleanStampPoint($rule->earn_point) > 0;
+    });
+
+    $rules_desc = $rules_collection->sortByDesc(function ($rule) {
+        return $this->cleanStampPoint($rule->earn_point);
+    });
+
+    foreach ($rules_desc as $rule) {
+        $rule_point = $this->cleanStampPoint($rule->earn_point);
+        $rule_claim_qty = $this->cleanStampPoint($rule->claim_qty);
+
+        if ($rule_point <= 0 || $rule_claim_qty <= 0 || $remaining_point < $rule_point) {
+            continue;
+        }
+
+        $times = floor($remaining_point / $rule_point);
+
+        $total_qty += $times * $rule_claim_qty;
+        $remaining_point = $remaining_point - ($times * $rule_point);
+    }
+
+    if ($remaining_point > 0) {
+        $smallest_rule = $rules_collection->sortBy(function ($rule) {
+            return $this->cleanStampPoint($rule->earn_point);
+        })->first();
+
+        if (!empty($smallest_rule)) {
+            $smallest_point = $this->cleanStampPoint($smallest_rule->earn_point);
+            $smallest_claim_qty = $this->cleanStampPoint($smallest_rule->claim_qty);
+
+            if ($smallest_point > 0 && $smallest_claim_qty > 0) {
+                $qty_per_point = $smallest_claim_qty / $smallest_point;
+                $total_qty += $remaining_point * $qty_per_point;
+            }
+        }
+    }
+
+    return $total_qty;
+}
+
+private function calculateStampByMaxRule($amount, $rules, $amountField, $resultField)
+{
+    $amount = $this->cleanStampPoint($amount);
+    $total_result = 0;
+    $remaining_amount = $amount;
+
+    $rules = collect($rules)->sortByDesc(function ($rule) use ($amountField) {
+        return $this->cleanStampPoint($rule->{$amountField});
+    });
+
+    foreach ($rules as $rule) {
+        $rule_amount = $this->cleanStampPoint($rule->{$amountField});
+        $rule_result = $this->cleanStampPoint($rule->{$resultField});
+
+        if ($rule_amount <= 0 || $rule_result <= 0 || $remaining_amount < $rule_amount) {
+            continue;
+        }
+
+        $times = floor($remaining_amount / $rule_amount);
+
+        $total_result += $times * $rule_result;
+        $remaining_amount = $remaining_amount - ($times * $rule_amount);
+    }
+
+    return $total_result;
+}
+
+private function reverseTransactionStampPoints($transaction_id)
+{
+    $stamp_points = \DB::table('transaction_stamp_points')
+        ->where('transaction_id', $transaction_id)
+        ->get();
+
+    foreach ($stamp_points as $stamp_point) {
+        $balance = \DB::table('customer_stamp_point_balances')
+            ->where('business_id', $stamp_point->business_id)
+            ->where('contact_id', $stamp_point->contact_id)
+            ->where('product_id', $stamp_point->product_id)
+            ->where('claim_product_id', $stamp_point->claim_product_id)
+            ->lockForUpdate()
+            ->first();
+
+        if (!empty($balance)) {
+            $new_total_qty = (float) $balance->total_qty - (float) $stamp_point->sale_qty;
+            $new_claimed_qty = (float) $balance->claimed_qty - (float) $stamp_point->claim_qty;
+            $new_claimed_point = (float) $balance->claimed_point - (float) $stamp_point->claimed_point;
+
+            if ($new_total_qty < 0) {
+                $new_total_qty = 0;
+            }
+
+            if ($new_claimed_qty < 0) {
+                $new_claimed_qty = 0;
+            }
+
+            if ($new_claimed_point < 0) {
+                $new_claimed_point = 0;
+            }
+
+            $rules = BusinessStampRule::where('business_id', $stamp_point->business_id)
+                ->where('product_id', $stamp_point->product_id)
+                ->where('claim_product_id', $stamp_point->claim_product_id)
+                ->where('is_active', 1)
+                ->select('product_id', 'claim_product_id', 'stamp_qty', 'earn_point', 'claim_qty')
+                ->orderBy('stamp_qty', 'desc')
+                ->get();
+
+            $eligible_point = $this->calculateEligiblePointByCycle($new_total_qty, $rules);
+
+            $new_point_balance = $eligible_point - $new_claimed_point;
+
+            if ($new_point_balance < 0) {
+                $new_point_balance = 0;
+            }
+
+            \DB::table('customer_stamp_point_balances')
+                ->where('id', $balance->id)
+                ->update([
+                    'total_qty' => $new_total_qty,
+                    'claimed_qty' => $new_claimed_qty,
+                    'claimed_point' => $new_claimed_point,
+                    'point_balance' => $new_point_balance,
+                    'updated_at' => now(),
+                ]);
+        }
+    }
+
+    \DB::table('transaction_stamp_points')
+        ->where('transaction_id', $transaction_id)
+        ->delete();
+}
+
+private function getStampPointRulesForSale($business_id)
+{
+    return BusinessStampRule::leftJoin('products as p', 'business_stamp_rules.product_id', '=', 'p.id')
+        ->leftJoin('products as cp', 'business_stamp_rules.claim_product_id', '=', 'cp.id')
+        ->where('business_stamp_rules.business_id', $business_id)
+        ->where('business_stamp_rules.is_active', 1)
+        ->select(
+            'business_stamp_rules.product_id',
+            'business_stamp_rules.claim_product_id',
+            'business_stamp_rules.stamp_qty',
+            'business_stamp_rules.earn_point',
+            'business_stamp_rules.claim_qty',
+            DB::raw("CONCAT(p.name, IF(p.sku IS NOT NULL AND p.sku != '', CONCAT(' - ', p.sku), '')) as product_name"),
+            DB::raw("CONCAT(cp.name, IF(cp.sku IS NOT NULL AND cp.sku != '', CONCAT(' - ', cp.sku), '')) as claim_product_name")
+        )
+        ->orderBy('business_stamp_rules.stamp_qty', 'desc')
+        ->get()
+        ->groupBy('product_id')
+        ->map(function ($rules) {
+            return $rules->map(function ($rule) {
+                return [
+                    'product_id' => (int) $rule->product_id,
+                    'claim_product_id' => (int) $rule->claim_product_id,
+                    'stamp_qty' => (float) $rule->stamp_qty,
+                    'earn_point' => (float) $rule->earn_point,
+                    'claim_qty' => (float) $rule->claim_qty,
+                    'product_name' => $rule->product_name,
+                    'claim_product_name' => $rule->claim_product_name,
+                ];
+            })->values();
+        })
+        ->toArray();
+}
+
+private function getCustomerStampPointsForSale($business_id)
+{
+    return CustomerStampPointBalance::leftJoin('products as p', 'customer_stamp_point_balances.product_id', '=', 'p.id')
+        ->leftJoin('products as cp', 'customer_stamp_point_balances.claim_product_id', '=', 'cp.id')
+        ->where('customer_stamp_point_balances.business_id', $business_id)
+        ->select(
+            'customer_stamp_point_balances.contact_id',
+            'customer_stamp_point_balances.product_id',
+            'customer_stamp_point_balances.claim_product_id',
+            'customer_stamp_point_balances.point_balance',
+            'customer_stamp_point_balances.total_qty',
+            'customer_stamp_point_balances.claimed_qty',
+            'customer_stamp_point_balances.claimed_point',
+            DB::raw("CONCAT(p.name, IF(p.sku IS NOT NULL AND p.sku != '', CONCAT(' - ', p.sku), '')) as product_name"),
+            DB::raw("CONCAT(cp.name, IF(cp.sku IS NOT NULL AND cp.sku != '', CONCAT(' - ', cp.sku), '')) as claim_product_name")
+        )
+        ->get()
+        ->groupBy('contact_id')
+        ->map(function ($balances) {
+            return $balances->map(function ($balance) {
+                return [
+                    'contact_id' => (int) $balance->contact_id,
+                    'product_id' => (int) $balance->product_id,
+                    'claim_product_id' => (int) $balance->claim_product_id,
+                    'point_balance' => (float) $balance->point_balance,
+                    'total_qty' => (float) $balance->total_qty,
+                    'claimed_qty' => (float) $balance->claimed_qty,
+                    'claimed_point' => (float) $balance->claimed_point,
+                    'product_name' => $balance->product_name,
+                    'claim_product_name' => $balance->claim_product_name,
+                ];
+            })->values();
+        })
+        ->toArray();
+}
+
+private function getTransactionStampClaimsForSale($business_id, $transaction_id)
+{
+    return TransactionStampPoint::where('business_id', $business_id)
+        ->where('transaction_id', $transaction_id)
+        ->select(
+            'product_id',
+            'claim_product_id',
+            'balance_before',
+            'earned_point',
+            'claimed_point',
+            'claim_qty',
+            'balance_after'
+        )
+        ->get()
+        ->map(function ($row) {
+            return [
+                'product_id' => (int) $row->product_id,
+                'claim_product_id' => (int) $row->claim_product_id,
+                'balance_before' => (float) $row->balance_before,
+                'earned_point' => (float) $row->earned_point,
+                'claimed_point' => (float) $row->claimed_point,
+                'claim_qty' => (float) $row->claim_qty,
+                'balance_after' => (float) $row->balance_after,
+            ];
+        })
+        ->toArray();
+}
 }

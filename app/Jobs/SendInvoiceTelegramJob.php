@@ -28,6 +28,8 @@ class SendInvoiceTelegramJob implements ShouldQueue
 
     public function handle(): void
     {
+        \Log::info('SendInvoiceTelegramJob: starting tx=' . $this->transactionId . ' biz=' . $this->businessId);
+
         $transaction = Transaction::with([
             'sell_lines',
             'sell_lines.product',
@@ -36,6 +38,7 @@ class SendInvoiceTelegramJob implements ShouldQueue
         ])->find($this->transactionId);
 
         if (! $transaction) {
+            \Log::warning('SendInvoiceTelegramJob: transaction not found tx=' . $this->transactionId);
             return;
         }
 

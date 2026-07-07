@@ -68,8 +68,17 @@
                 <div class="form-group">
                     <div class="checkbox">
                     <label>
-                        {!! Form::checkbox('show_letter_head', 1, false, 
+                        {!! Form::checkbox('show_letter_head', 1, false,
                             ['class' => 'input-icheck', 'id' => 'show_letter_head']); !!} @lang('lang_v1.show_letter_head')</label>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-6">
+                <div class="form-group">
+                    <div class="checkbox">
+                    <label>
+                        {!! Form::checkbox('rotate_90', 1, false, ['class' => 'input-icheck']); !!}
+                        Rotate 90 (Landscape Print)</label>
                     </div>
                 </div>
             </div>
@@ -193,6 +202,14 @@
               'placeholder' => __('lang_v1.sales_order_heading'), 'id' => 'sales_order_heading' ]); !!}
           </div>
         </div>
+
+        <div class="col-sm-3">
+          <div class="form-group">
+            {!! Form::label('dn_heading', 'Delivery Note Heading:') !!}
+            {!! Form::text('dn_heading', 'Delivery Note', ['class' => 'form-control', 'placeholder' => 'Delivery Note']); !!}
+          </div>
+        </div>
+
         <div class="col-sm-3">
           <div class="form-group">
             {!! Form::label('invoice_no_prefix', __('invoice.invoice_no_prefix') . ':' ) !!}
@@ -669,7 +686,16 @@
                 ]) !!}
             </div>
         </div>
-        
+        <div class="col-sm-3">
+            <div class="form-group">
+                {!! Form::label('marketing_price_label', __('Marketing Price Label') . ':') !!}
+                {!! Form::text('marketing_price_label', old('marketing_price_label'), [
+                    'class' => 'form-control',
+                    'placeholder' => __('Marketing Price Label')
+                ]) !!}
+            </div>
+        </div>
+
         <div class="col-sm-12">
           <h4>@lang('lang_v1.product_details_to_be_shown'):</h4>
         </div>

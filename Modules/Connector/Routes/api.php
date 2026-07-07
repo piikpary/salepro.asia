@@ -90,6 +90,12 @@ Route::middleware('auth:api', 'timezone')->prefix('connector/api')->group(functi
     Route::get('mobile/drivers', [\Modules\Connector\Http\Controllers\Api\ScanAssignController::class, 'drivers']);
     Route::post('mobile/scan-assign-invoice', [\Modules\Connector\Http\Controllers\Api\ScanAssignController::class, 'scanAssignInvoice']);
     Route::get('mobile/scan-assign-invoice/history', [\Modules\Connector\Http\Controllers\Api\ScanAssignController::class, 'history']);
+
+     // SaleApp Products API (App Sale Category + User Product Visibility)
+    Route::get('mobile/sale-app-products', [\Modules\Connector\Http\Controllers\Api\SaleAppProductController::class, 'index']);
+
+    // Customer Credit Check API
+    Route::get('mobile/customer-credit-check', [\Modules\Connector\Http\Controllers\Api\CustomerCreditCheckController::class, 'check']);
 });
 
 Route::middleware('auth:api', 'timezone')->prefix('connector/api/crm')->group(function () {

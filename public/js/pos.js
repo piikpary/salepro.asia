@@ -1,6 +1,12 @@
 $(document).ready(function() {
     customer_set = false;
 
+    // Track user's chosen delivery type — survives form.reset() and all triggered events
+    var pos_last_delivery_type = $('#pos_delivery_type').val() || 'pickup';
+    $(document).on('change', '#pos_delivery_type', function() {
+        pos_last_delivery_type = $(this).val();
+    });
+
     setTimeout(function() {
         autoLoadSalesOrderLines();
     }, 1000); // Small delay to ensure everything is initialized
@@ -554,13 +560,14 @@ $(document).ready(function() {
         if ($("#repair_defects").length > 0) {
             tagify_repair_defects.removeAllTags();
         }
-    
+
         if(pos_form_obj[0]){
             pos_form_obj[0].reset();
         }
         if(sell_form[0]){
             sell_form[0].reset();
         }
+
         set_default_customer();
         set_location();
     
@@ -621,8 +628,11 @@ $(document).ready(function() {
         //reset contact due
         $('.contact_due_text').find('span').text('');
         $('.contact_due_text').addClass('hide');
-    
+
         $(document).trigger('sell_form_reset');
+
+        // Restore delivery type LAST — after all resets, triggers, and event handlers
+        $('#pos_delivery_type').val(pos_last_delivery_type);
     }
 
     $('form#quick_add_contact')
@@ -2751,14 +2761,16 @@ function autoLoadSalesOrderLines() {
             $('#sales_order_ids').trigger('change');
         }
         
-        // Load the sales order lines
+        // Load the sales order lines (pass dn_id when selling from a DN to subtract returns)
+        var autoLoadDnId = $('#auto_load_dn_id').val() || '';
         $.ajax({
             method: 'GET',
             url: '/get-sales-order-lines',
             async: false,
             data: {
                 product_row: product_row,
-                sales_order_id: autoLoadSalesOrderId
+                sales_order_id: autoLoadSalesOrderId,
+                dn_id: autoLoadDnId
             },
             dataType: 'json',
             success: function(result) {
@@ -2842,7 +2854,171 @@ function autoLoadSalesOrderLines() {
 
                     $('input#product_row_count').val(product_row);
                     pos_total_row();
-                
+
+                    // When creating sell from Delivery Note:
+                    //  - Plain products         → qty locked, +/- disabled
+                    //  - Reward-exchange groups → +/- enabled, group total capped at delivered qty
+                    //
+                    // Detection strategy (the SO has no RX children — they are added at DN creation):
+                    //   Step A: scan result.dn_sell_lines (the DN's own lines) to find reward_exchange
+                    //           children → learn which variation_ids are "receive products", and which
+                    //           DN parent variation_ids are "product_for_sale".
+                    //   Step B: scan result.all_sell_lines (SO lines) to find the SO parent lines whose
+                    //           variation_id matches product_for_sale (type-1 adjustable) OR whose combo
+                    //           child variation_id matches the receive product (type-2 adjustable).
+                    //   Step C: match visible table rows via input[name*="[so_line_id]"] → SO line id.
+                    if (autoLoadDnId) {
+                        var soLines = result.all_sell_lines || [];
+                        var dnLines = result.dn_sell_lines  || [];
+
+                        // ── Step A: build per-receive-product groups from DN lines ─────────────
+                        // Each reward_exchange rule links a product_for_sale → receive_product.
+                        // Each combo product also links to a receive_product (its combo child).
+                        // Products that share the same receive variation form ONE independent group.
+                        //
+                        // groupsData[receiveVarId] = { ids: {soLineId: true}, max: 0 }
+
+                        // Map DN parent line id → variation_id (to find product_for_sale variation)
+                        var dnParentVarById = {};
+                        dnLines.forEach(function(l) {
+                            if (!l.parent_sell_line_id) dnParentVarById[l.id] = l.variation_id;
+                        });
+
+                        // receiveVarId → { parentVarId: true }  (from RX children in DN)
+                        var rxReceiveToParentVars = {};
+                        dnLines.forEach(function(l) {
+                            if (l.children_type === 'reward_exchange' && l.parent_sell_line_id) {
+                                var rcvVarId    = l.variation_id;
+                                var pfSaleVarId = dnParentVarById[l.parent_sell_line_id];
+                                if (!pfSaleVarId) return;
+                                if (!rxReceiveToParentVars[rcvVarId]) rxReceiveToParentVars[rcvVarId] = {};
+                                rxReceiveToParentVars[rcvVarId][pfSaleVarId] = true;
+                            }
+                        });
+
+                        // SO parent variation_id → SO line id
+                        var soVarToLineId = {};
+                        soLines.forEach(function(l) {
+                            if (!l.parent_sell_line_id) soVarToLineId[l.variation_id] = l.id;
+                        });
+
+                        // soLineId → receiveVarId  (group key)
+                        var soLineToGroupKey = {};
+
+                        // Type-1: product_for_sale parents (variation matches RX parent variation)
+                        Object.keys(rxReceiveToParentVars).forEach(function(rcvVarId) {
+                            Object.keys(rxReceiveToParentVars[rcvVarId]).forEach(function(pfVarId) {
+                                var soId = soVarToLineId[pfVarId];
+                                if (soId) soLineToGroupKey[soId] = rcvVarId;
+                            });
+                        });
+
+                        // Type-2: combo/combo_single parents whose child variation = receive product
+                        soLines.forEach(function(l) {
+                            if ((l.children_type === 'combo' || l.children_type === 'combo_single') && l.parent_sell_line_id) {
+                                if (rxReceiveToParentVars[l.variation_id]) {
+                                    soLineToGroupKey[l.parent_sell_line_id] = l.variation_id;
+                                }
+                            }
+                        });
+
+                        // Build groupsData: receiveVarId → {ids:{}, max:0}
+                        var groupsData = {};
+                        Object.keys(soLineToGroupKey).forEach(function(soId) {
+                            var gKey = soLineToGroupKey[soId];
+                            if (!groupsData[gKey]) groupsData[gKey] = {ids: {}, max: 0};
+                            groupsData[gKey].ids[soId] = true;
+                        });
+
+                        // Sum group max from SO parent quantities
+                        soLines.forEach(function(l) {
+                            if (!l.parent_sell_line_id && soLineToGroupKey[l.id]) {
+                                groupsData[soLineToGroupKey[l.id]].max += parseFloat(l.quantity || 0);
+                            }
+                        });
+
+                        // Drop groups with fewer than 2 members
+                        Object.keys(groupsData).forEach(function(gKey) {
+                            if (Object.keys(groupsData[gKey].ids).length < 2) delete groupsData[gKey];
+                        });
+
+                        // Flat map: soLineId → groupKey (only valid groups)
+                        var adjustableSoIds = {};
+                        Object.keys(groupsData).forEach(function(gKey) {
+                            Object.keys(groupsData[gKey].ids).forEach(function(soId) {
+                                adjustableSoIds[soId] = gKey;
+                            });
+                        });
+
+                        // ── Step B: lock ALL rows ────────────────────────────────────────────
+                        $('table#pos_table tbody').find('input.pos_quantity').each(function() {
+                            $(this).prop('readonly', true)
+                                   .css({'background-color': '#f5f5f5', 'cursor': 'not-allowed'})
+                                   .attr('title', 'Quantity fixed: delivered minus returned');
+                        });
+                        $('table#pos_table tbody').find('button.quantity-down, button.quantity-up').each(function() {
+                            $(this).prop('disabled', true)
+                                   .css({'opacity': '0.4', 'cursor': 'not-allowed'});
+                        });
+
+                        // Disable product search bar and add-product button
+                        $('input#search_product')
+                            .prop('disabled', true)
+                            .attr('placeholder', 'Product list is fixed for this delivery note')
+                            .css({'background-color': '#f5f5f5', 'cursor': 'not-allowed'});
+                        $('button.pos_add_quick_product, button[data-target="#configure_search_modal"]')
+                            .prop('disabled', true)
+                            .css({'opacity': '0.4', 'cursor': 'not-allowed'});
+
+                        // Disable row delete icons
+                        $('table#pos_table').on('DOMNodeInserted', function() {
+                            $(this).find('i.pos_remove_row').css({'opacity': '0.2', 'pointer-events': 'none', 'cursor': 'not-allowed'});
+                        });
+                        $('table#pos_table').find('i.pos_remove_row')
+                            .css({'opacity': '0.2', 'pointer-events': 'none', 'cursor': 'not-allowed'});
+
+                        // ── Step C: re-enable group rows with per-group constraint ─────────────
+                        if (Object.keys(adjustableSoIds).length > 0) {
+                            $('table#pos_table tbody tr').each(function() {
+                                var $row     = $(this);
+                                var soLineId = String(parseInt($row.find('input[name*="[so_line_id]"]').val() || 0));
+                                if (!soLineId || soLineId === '0' || !adjustableSoIds[soLineId]) return;
+
+                                var gKey     = adjustableSoIds[soLineId];
+                                var gMax     = groupsData[gKey].max;
+
+                                // Each group gets a unique data-dn-group-id so rows only
+                                // sum within their own group, not across groups.
+                                $row.attr('data-dn-group-id',  gKey);
+                                $row.attr('data-dn-group-max', gMax);
+
+                                $row.find('input.pos_quantity')
+                                    .prop('readonly', false)
+                                    .css({'background-color': '', 'cursor': ''})
+                                    .removeAttr('title');
+
+                                $row.find('button.quantity-down, button.quantity-up')
+                                    .prop('disabled', false)
+                                    .css({'opacity': '1', 'cursor': 'pointer'});
+
+                                // Direct binding → fires before common.js document handler
+                                $row.find('.input-number .quantity-up').on('click.dn_group', function() {
+                                    var sum = 0;
+                                    $('table#pos_table tbody tr[data-dn-group-id="' + gKey + '"]').each(function() {
+                                        sum += __read_number($(this).find('input.pos_quantity'));
+                                    });
+                                    if (sum >= gMax) {
+                                        toastr.warning('Cannot exceed total delivered qty of ' + gMax + ' for this group.');
+                                        return false;
+                                    }
+                                });
+                                $row.find('.input-number .quantity-down').on('click.dn_group', function() {
+                                    if (__read_number($row.find('input.pos_quantity')) <= 0) return false;
+                                });
+                            });
+                        }
+                    }
+
                 } else {
                     if (result.msg) {
                         toastr.error(result.msg);

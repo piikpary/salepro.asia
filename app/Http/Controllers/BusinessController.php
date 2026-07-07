@@ -12,6 +12,9 @@ use App\User;
 use App\Utils\BusinessUtil;
 use App\Utils\ModuleUtil;
 use App\Utils\RestaurantUtil;
+use App\BusinessStampRule;
+use App\Product;
+use PhpOffice\PhpSpreadsheet\IOFactory;
 use Carbon\Carbon;
 use DateTimeZone;
 use Illuminate\Http\Request;
@@ -333,7 +336,25 @@ class BusinessController extends Controller
 
         $payment_types = $this->moduleUtil->payment_types(null, false, $business_id);
 
-        return view('business.settings', compact('business', 'currencies', 'tax_rates', 'timezone_list', 'months', 'accounting_methods', 'commission_agent_dropdown', 'units_dropdown', 'date_formats', 'shortcuts', 'pos_settings', 'modules', 'theme_colors', 'email_settings', 'sms_settings', 'mail_drivers', 'allow_superadmin_email_settings', 'custom_labels', 'common_settings', 'weighing_scale_setting', 'payment_types'));
+	$stamp_rules = BusinessStampRule::with(['product', 'claimProduct'])
+            ->where('business_id', $business_id)
+            ->orderBy('id', 'desc')
+            ->get();
+
+        $business_products = Product::leftJoin('variations as v', 'products.id', '=', 'v.product_id')
+        ->where('products.business_id', $business_id)
+        ->select(
+            'products.id',
+            'products.name',
+            'products.sku',
+            DB::raw('MIN(v.sub_sku) as sub_sku')
+        )
+        ->groupBy('products.id', 'products.name', 'products.sku')
+        ->orderBy('products.name')
+        ->get();
+
+        return view('business.settings', compact('business', 'currencies', 'tax_rates', 'timezone_list', 'months', 'accounting_methods', 'commission_agent_dropdown', 'units_dropdown', 'date_formats', 'shortcuts', 'pos_settings', 'modules', 'theme_colors', 'email_settings', 'sms_settings', 'mail_drivers', 'allow_superadmin_email_settings', 'custom_labels', 'common_settings', 'weighing_scale_setting', 'payment_types','stamp_rules',
+                'business_products'));
     }
 
     /**
@@ -369,6 +390,13 @@ class BusinessController extends Controller
             } else {
                 $business_details['enable_rp'] = 0;
             }
+
+		if (! empty($request->input('enable_stamp_point')) && $request->input('enable_stamp_point') == 1) {
+                $business_details['enable_stamp_point'] = 1;
+            } else {
+                $business_details['enable_stamp_point'] = 0;
+            }
+
 
             $business_details['amount_for_unit_rp'] = ! empty($business_details['amount_for_unit_rp']) ? $this->businessUtil->num_uf($business_details['amount_for_unit_rp']) : 1;
             $business_details['min_order_total_for_rp'] = ! empty($business_details['min_order_total_for_rp']) ? $this->businessUtil->num_uf($business_details['min_order_total_for_rp']) : 1;
@@ -472,6 +500,9 @@ class BusinessController extends Controller
             //update current financial year to session
             $financial_year = $this->businessUtil->getCurrentFinancialYear($business->id);
             $request->session()->put('financial_year', $financial_year);
+
+		//Save stamp rules for current business only
+            $this->saveBusinessStampRules($request);
 
             $output = ['success' => 1,
                 'msg' => __('business.settings_updated_success'),
@@ -763,4 +794,164 @@ class BusinessController extends Controller
 
         return $output;
     }
+
+	private function saveBusinessStampRules($request)
+{
+    $business_id = request()->session()->get('user.business_id');
+
+    DB::transaction(function () use ($request, $business_id) {
+        $deleted_rule_ids = $request->input('deleted_stamp_rule_ids', []);
+
+        if (!empty($deleted_rule_ids)) {
+            BusinessStampRule::where('business_id', $business_id)
+                ->whereIn('id', $deleted_rule_ids)
+                ->delete();
+        }
+
+        $product_ids = $request->input('stamp_product_id', []);
+
+        foreach ($product_ids as $index => $product_id) {
+            if (empty($product_id)) {
+                continue;
+            }
+
+            $rule_id = $request->input("stamp_rule_id.$index");
+            $stamp_qty = $request->input("stamp_qty.$index");
+            $earn_point = $request->input("earn_point.$index");
+            $claim_product_id = $request->input("claim_product_id.$index");
+            $claim_qty = $request->input("claim_qty.$index");
+            $is_active = $request->input("stamp_is_active.$index", 0);
+
+            if (
+                empty($stamp_qty) ||
+                empty($earn_point) ||
+                empty($claim_product_id) ||
+                empty($claim_qty)
+            ) {
+                continue;
+            }
+
+            $product = Product::where('business_id', $business_id)
+                ->where('id', $product_id)
+                ->first();
+
+            $claim_product = Product::where('business_id', $business_id)
+                ->where('id', $claim_product_id)
+                ->first();
+
+            if (empty($product) || empty($claim_product)) {
+                continue;
+            }
+
+            $data = [
+                'business_id' => $business_id,
+                'product_id' => $product_id,
+                'stamp_qty' => $this->cleanStampQty($stamp_qty),
+                'earn_point' => $this->cleanStampQty($earn_point),
+                'claim_product_id' => $claim_product_id,
+                'claim_qty' => $this->cleanStampQty($claim_qty),
+                'is_active' => !empty($is_active) ? 1 : 0,
+                'created_by' => auth()->id(),
+            ];
+
+            if (!empty($rule_id)) {
+                BusinessStampRule::where('business_id', $business_id)
+                    ->where('id', $rule_id)
+                    ->update($data);
+            } else {
+                BusinessStampRule::create($data);
+            }
+        }
+
+        if ($request->hasFile('stamp_rule_import')) {
+            $this->importStampRulesFromExcel($request->file('stamp_rule_import'), $business_id);
+        }
+    });
+}
+private function importStampRulesFromExcel($file, $business_id)
+{
+    $spreadsheet = IOFactory::load($file->getRealPath());
+    $rows = $spreadsheet->getActiveSheet()->toArray(null, true, true, true);
+
+    foreach ($rows as $row_number => $row) {
+        if ($row_number == 1) {
+            continue;
+        }
+
+        // Excel format:
+        // A = Product SKU/Name
+        // B = Qty
+        // C = Earn Point
+        // D = Claim
+
+        $product_value = trim((string) ($row['A'] ?? ''));
+        $stamp_qty = trim((string) ($row['B'] ?? ''));
+        $earn_point = trim((string) ($row['C'] ?? ''));
+        $claim_qty = trim((string) ($row['D'] ?? ''));
+
+        if (empty($product_value) || empty($stamp_qty) || empty($earn_point)) {
+            continue;
+        }
+
+        $product = $this->findStampRuleProduct($business_id, $product_value);
+
+        if (empty($product)) {
+            continue;
+        }
+
+        BusinessStampRule::updateOrCreate(
+            [
+                'business_id' => $business_id,
+                'product_id' => $product->id,
+            ],
+            [
+                'stamp_qty' => $this->cleanStampQty($stamp_qty),
+                'earn_point' => $this->cleanStampQty($earn_point),
+                'claim_product_id' => null,
+                'claim_qty' => $this->cleanStampQty($claim_qty),
+                'is_active' => 1,
+                'created_by' => auth()->id(),
+            ]
+        );
+    }
+}
+
+private function findStampRuleProduct($business_id, $value)
+{
+    $value = trim((string) $value);
+
+    if ($value === '') {
+        return null;
+    }
+
+    $product = Product::where('business_id', $business_id)
+        ->where('sku', $value)
+        ->first();
+
+    if (!empty($product)) {
+        return $product;
+    }
+
+    $product = Product::join('variations as v', 'products.id', '=', 'v.product_id')
+        ->where('products.business_id', $business_id)
+        ->where('v.sub_sku', $value)
+        ->select('products.*')
+        ->first();
+
+    if (!empty($product)) {
+        return $product;
+    }
+
+    return Product::where('business_id', $business_id)
+        ->where('name', $value)
+        ->first();
+}
+
+private function cleanStampQty($value)
+{
+    $number = preg_replace('/[^0-9.]/', '', (string) $value);
+
+    return !empty($number) ? $number : 0;
+}
+
 }

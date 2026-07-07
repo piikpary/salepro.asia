@@ -477,6 +477,8 @@ public function index(Request $request)
         // Calculate Days-Over-Days Change (Difference in variance percentage)
         $dod_change = $overall_variance - $yesterday_variance;
 
+        $mapping_data = $this->buildMappingData($business_id, $today);
+
         return view('sales_visit.daily_summary', compact(
             'today',
             'business_name',
@@ -490,20 +492,16 @@ public function index(Request $request)
             'yesterday_target',
             'yesterday_variance',
             'overall_own_pct',
-            'overall_other_pct'
+            'overall_other_pct',
+            'mapping_data'
         ));
     }
 
     public function sendToTelegram(Request $request)
     {
         try {
-            // 1. Get current business_id from session
             $business_id = $request->session()->get('user.business_id');
 
-            // 2. Look up ALL active chat_ids for this business regardless of type.
-            //    Both "immediate" and "schedule" types receive the manual send —
-            //    type is only checked by the cron job (SendDailySaleVisitSummary).
-            //    Filter: only schedules that include "sales_visit" report type.
             $schedules = \Illuminate\Support\Facades\DB::table('telegram_schedules')
                 ->where('business_id', $business_id)
                 ->where('is_active', 1)
@@ -513,69 +511,181 @@ public function index(Request $request)
                 })
                 ->get();
 
-            // 3. Check if setup exists at all. If empty, return error.
             if ($schedules->isEmpty()) {
                 return response()->json([
-                    'success' => false, 
-                    'message' => 'This business is not yet set up with Telegram.'
+                    'success' => false,
+                    'message' => 'This business is not yet set up with Telegram.',
                 ]);
             }
 
-            // 4. Get the base64 image string from the request
-            $image_data = $request->input('image');
-            $image_parts = explode(";base64,", $image_data);
-            $image_base64 = base64_decode($image_parts[1]);
+            $ts = time();
 
-            // 5. Save it to a temporary file
-            $fileName = 'daily_summary_' . time() . '.png';
-            $tempPath = storage_path('app/public/' . $fileName);
-            file_put_contents($tempPath, $image_base64);
+            // Save main summary image
+            $image_data   = $request->input('image');
+            $image_parts  = explode(';base64,', $image_data);
+            $fileName1    = 'daily_summary_' . $ts . '.png';
+            $tempPath1    = storage_path('app/public/' . $fileName1);
+            file_put_contents($tempPath1, base64_decode($image_parts[1]));
 
-            // 6. Prepare Telegram API details
+            // Save mapping image if provided
+            $tempPath2 = null;
+            $fileName2 = null;
+            $image_mapping_data = $request->input('image_mapping');
+            if ($image_mapping_data) {
+                $mapping_parts = explode(';base64,', $image_mapping_data);
+                $fileName2     = 'daily_summary_mapping_' . $ts . '.png';
+                $tempPath2     = storage_path('app/public/' . $fileName2);
+                file_put_contents($tempPath2, base64_decode($mapping_parts[1]));
+            }
+
             $botToken = '8737726993:AAEd8C5uWwHu5cYc8YVH4zfpUwUxSWaplSc';
-            $caption = "📊 *Daily Sale Visit Summary*\nDate: " . \Carbon\Carbon::today()->format('Y-m-d');
-            
-            $successCount = 0;
+            $date     = \Carbon\Carbon::today()->format('Y-m-d');
+            $caption1 = "📊 *Daily Sale Visit Summary*\nDate: {$date}";
+            $caption2 = "📊 *Mapping Product Compare*\nDate: {$date}";
+
+            $successCount  = 0;
             $errorMessages = [];
 
-            // 7. Loop through EVERY group set up for this business and send the image
             foreach ($schedules as $schedule) {
-                // Skip if chat_id is empty
                 if (empty($schedule->chat_id)) continue;
 
-                $response = \Illuminate\Support\Facades\Http::attach(
-                    'photo', file_get_contents($tempPath), $fileName
-                )->post("https://api.telegram.org/bot{$botToken}/sendPhoto", [
-                    'chat_id' => $schedule->chat_id,
-                    'caption' => $caption,
-                    'parse_mode' => 'Markdown'
-                ]);
+                // Send main summary image
+                $response = \Illuminate\Support\Facades\Http::attach('photo', file_get_contents($tempPath1), $fileName1)
+                    ->post("https://api.telegram.org/bot{$botToken}/sendPhoto", [
+                        'chat_id'    => $schedule->chat_id,
+                        'caption'    => $caption1,
+                        'parse_mode' => 'Markdown',
+                    ]);
 
                 if ($response->successful() && $response->json('ok')) {
                     $successCount++;
                 } else {
                     $errorMessages[] = $response->json('description', 'Unknown error');
                 }
+
+                // Send mapping image if available
+                if ($tempPath2 && file_exists($tempPath2)) {
+                    \Illuminate\Support\Facades\Http::attach('photo', file_get_contents($tempPath2), $fileName2)
+                        ->post("https://api.telegram.org/bot{$botToken}/sendPhoto", [
+                            'chat_id'    => $schedule->chat_id,
+                            'caption'    => $caption2,
+                            'parse_mode' => 'Markdown',
+                        ]);
+                }
             }
 
-            // 8. Delete the temporary file
-            unlink($tempPath);
+            if (file_exists($tempPath1)) unlink($tempPath1);
+            if ($tempPath2 && file_exists($tempPath2)) unlink($tempPath2);
 
-            // 9. Return response based on how many groups were successfully sent
             if ($successCount > 0) {
                 return response()->json([
-                    'success' => true, 
-                    'message' => "Summary sent to {$successCount} Telegram group(s) successfully!"
+                    'success' => true,
+                    'message' => "Summary sent to {$successCount} Telegram group(s) successfully!",
                 ]);
             } else {
                 return response()->json([
-                    'success' => false, 
-                    'message' => 'Telegram Error: ' . implode(' | ', $errorMessages)
+                    'success' => false,
+                    'message' => 'Telegram Error: ' . implode(' | ', $errorMessages),
                 ]);
             }
-            
+
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()]);
         }
+    }
+
+    private function buildMappingData(int $business_id, $date): array
+    {
+        $visitIds = \Illuminate\Support\Facades\DB::table('transactions_visit')
+            ->where('business_id', $business_id)
+            ->whereDate('transaction_date', $date)
+            ->pluck('id')
+            ->toArray();
+
+        if (empty($visitIds)) return [];
+
+        $lineData = \Illuminate\Support\Facades\DB::table('transaction_sell_lines_visit')
+            ->whereIn('transaction_id', $visitIds)
+            ->whereNotNull('product_id')
+            ->selectRaw('product_id, kind_product, SUM(quantity) as total_qty')
+            ->groupBy('product_id', 'kind_product')
+            ->get();
+
+        $ownQtys   = [];
+        $otherQtys = [];
+        foreach ($lineData as $row) {
+            if ((int) $row->kind_product === 0) {
+                $ownQtys[$row->product_id]   = (float) $row->total_qty;
+            } else {
+                $otherQtys[$row->product_id] = (float) $row->total_qty;
+            }
+        }
+
+        if (empty($ownQtys)) return [];
+
+        $ownProductRows = \Illuminate\Support\Facades\DB::table('products')
+            ->whereIn('id', array_keys($ownQtys))
+            ->select(['id', 'name', 'assigned_competitors_product'])
+            ->get()
+            ->keyBy('id');
+
+        $allCompetitorIds = [];
+        foreach ($ownProductRows as $p) {
+            $ids = json_decode($p->assigned_competitors_product ?? '[]', true) ?? [];
+            $allCompetitorIds = array_merge($allCompetitorIds, $ids);
+        }
+        $allCompetitorIds = array_values(array_unique(array_filter($allCompetitorIds)));
+
+        $competitorNames = [];
+        if (!empty($allCompetitorIds)) {
+            $competitorNames = \Illuminate\Support\Facades\DB::table('products')
+                ->whereIn('id', $allCompetitorIds)
+                ->pluck('name', 'id')
+                ->toArray();
+        }
+
+        $groups = [];
+        foreach ($ownProductRows as $ownId => $ownProduct) {
+            $ownQty        = $ownQtys[$ownId] ?? 0;
+            $competitorIds = array_filter(json_decode($ownProduct->assigned_competitors_product ?? '[]', true) ?? []);
+
+            if (empty($competitorIds)) continue;
+
+            $competitors        = [];
+            $totalCompetitorQty = 0;
+
+            foreach ($competitorIds as $compId) {
+                $compQty = $otherQtys[$compId] ?? 0;
+                $diff    = $ownQty - $compQty;
+                $win     = $diff > 0;
+                $result  = ($win ? 'WIN' : ($diff < 0 ? 'LOSE' : 'DRAW'))
+                         . ' ' . (int) $ownQty . ' vs ' . (int) $compQty;
+
+                $competitors[] = [
+                    'name'   => $competitorNames[$compId] ?? 'Unknown',
+                    'qty'    => $compQty,
+                    'result' => $result,
+                    'win'    => $win,
+                ];
+                $totalCompetitorQty += $compQty;
+            }
+
+            $marketSize = $ownQty + $totalCompetitorQty;
+            $ownPct     = $marketSize > 0 ? round(($ownQty / $marketSize) * 100) : 100;
+            $otherPct   = 100 - $ownPct;
+
+            $groups[] = [
+                'own_name'             => $ownProduct->name,
+                'own_qty'              => $ownQty,
+                'competitors'          => $competitors,
+                'total_competitor_qty' => $totalCompetitorQty,
+                'market_size'          => $marketSize,
+                'own_pct'              => $ownPct,
+                'other_pct'            => $otherPct,
+                'result'               => $ownQty > $totalCompetitorQty ? 'WIN' : 'LOSE',
+            ];
+        }
+
+        return $groups;
     }
 }

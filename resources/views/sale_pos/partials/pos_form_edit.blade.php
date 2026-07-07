@@ -8,13 +8,13 @@
 				<span class="input-group-addon">
 					<i class="fa fa-user"></i>
 				</span>
-				<input type="hidden" id="default_customer_id" 
+				<input type="hidden" id="default_customer_id"
 				value="{{ $transaction->contact->id }}" >
-				<input type="hidden" id="default_customer_name" 
+				<input type="hidden" id="default_customer_name"
 				value="{{ $transaction->contact->name }}" >
-				<input type="hidden" id="default_customer_balance" 
+				<input type="hidden" id="default_customer_balance"
 				value="{{$transaction->contact->balance}}" >
-				{!! Form::select('contact_id', 
+				{!! Form::select('contact_id',
 					[], null, ['class' => 'form-control mousetrap', 'id' => 'customer_id', 'placeholder' => 'Enter Customer name / phone', 'required', 'style' => 'width: 100%;']); !!}
 				<span class="input-group-btn">
 					<button type="button" class="btn btn-default bg-white btn-flat add_new_customer" data-name=""  @if(!auth()->user()->can('customer.create')) disabled @endif><i class="fa fa-plus-circle text-primary fa-lg"></i></button>
@@ -23,7 +23,21 @@
 			<small class="text-danger @if(empty($customer_due)) hide @endif contact_due_text"><strong>@lang('account.customer_due'):</strong> <span>{{$customer_due ?? ''}}</span></small>
 		</div>
 	</div>
-	<div class="col-md-8">
+	@php $edit_pos_status = $transaction->pos_status ?? 'pickup'; @endphp
+	<div class="col-md-2">
+		<div class="form-group mb-0">
+			<div class="input-group">
+				<span class="input-group-addon" title="Delivery Type">
+					<i class="fa fa-truck"></i>
+				</span>
+				<select name="pos_status" id="pos_delivery_type" class="form-control" style="height:34px; padding:4px 8px;">
+					<option value="pickup" {{ $edit_pos_status === 'pickup' ? 'selected' : '' }}>Pickup</option>
+					<option value="delivery" {{ $edit_pos_status === 'delivery' ? 'selected' : '' }}>Delivery</option>
+				</select>
+			</div>
+		</div>
+	</div>
+	<div class="col-md-6">
 		<div class="form-group">
 			<div class="input-group">
 				<div class="input-group-btn">

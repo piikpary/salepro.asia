@@ -116,52 +116,58 @@
                             <tr>
                                 <th>No.</th>
                                 <th style="text-align: left;">SE's Name</th>
-                                <th>Actual/Target Visit</th>
-                                <th>Remain Target</th>
-                                <th>Own vs Other Product</th>
+                                <th>Visit</th>
+                                <th>Remain</th>
+                                <th>Own / Other</th>
+                                <th>Result</th>
                             </tr>
                         </thead>
                         <tbody>
                             @forelse($sales_report as $rep_id => $row)
+                            @php $rep_result = $row['own_pct'] > $row['other_pct'] ? 'WIN' : 'LOSE'; @endphp
                             <tr>
                                 <td style="color: #333;">{{ $loop->iteration }}</td>
                                 <td style="text-align: left; color: #333;"><em>{{ $row['name'] }}</em></td>
-                                
                                 <td style="color: #333;">
-                                    {{ $row['qty_visit'] }} / {{ $row['target'] }} 
+                                    {{ $row['qty_visit'] }} / {{ $row['target'] }}
                                     (<span class="{{ $row['variance'] >= 80 ? 'text-green' : 'text-red' }}">{{ $row['variance'] }}%</span>)
                                 </td>
-                                
                                 <td>
-                                    <span class="{{ $row['remaining'] == 0 ? 'text-green' : 'text-red' }}">{{ $row['remaining'] }}</span>
+                                    <span class="{{ $row['remaining'] >= 0 ? 'text-green' : 'text-red' }}">{{ $row['remaining'] }}</span>
                                 </td>
-                                
                                 <td>
-                                    <span class="text-green">{{ $row['own_pct'] }}%</span> 
-                                    <span style="color: #aaa;">/</span> 
+                                    <span class="text-green">{{ $row['own_pct'] }}%</span>
+                                    <span style="color: #aaa;">/</span>
                                     <span class="text-red">{{ $row['other_pct'] }}%</span>
+                                </td>
+                                <td>
+                                    <span style="background:{{ $rep_result === 'WIN' ? '#e8f5e9' : '#ffebee' }}; color:{{ $rep_result === 'WIN' ? '#2e7d32' : '#c62828' }}; padding:3px 10px; border-radius:4px; font-weight:bold; font-size:13px; display:inline-block;">{{ $rep_result }}</span>
                                 </td>
                             </tr>
                             @empty
                             <tr>
-                                <td colspan="5">No visits recorded for today.</td>
+                                <td colspan="6">No visits recorded for today.</td>
                             </tr>
                             @endforelse
                         </tbody>
                         <tfoot>
+                            @php $total_result = $overall_own_pct > $overall_other_pct ? 'WIN' : 'LOSE'; @endphp
                             <tr>
                                 <td colspan="2" style="text-align: center; color: #333;">Total</td>
                                 <td style="color: #333;">
-                                    {{ $todays_visits_count }} / {{ $total_target }} 
+                                    {{ $todays_visits_count }} / {{ $total_target }}
                                     (<span class="{{ $overall_variance >= 80 ? 'text-green' : 'text-red' }}">{{ $overall_variance }}%</span>)
                                 </td>
                                 <td>
-                                    <span class="text-red">{{ $overall_remaining }}</span>
+                                    <span class="{{ $overall_remaining <= 0 ? 'text-green' : 'text-red' }}">{{ $overall_remaining }}</span>
                                 </td>
                                 <td>
-                                    <span class="text-green">{{ $overall_own_pct }}%</span> 
-                                    <span style="color: #aaa;">/</span> 
+                                    <span class="text-green">{{ $overall_own_pct }}%</span>
+                                    <span style="color: #aaa;">/</span>
                                     <span class="text-red">{{ $overall_other_pct }}%</span>
+                                </td>
+                                <td>
+                                    <span style="background:{{ $total_result === 'WIN' ? '#e8f5e9' : '#ffebee' }}; color:{{ $total_result === 'WIN' ? '#2e7d32' : '#c62828' }}; padding:3px 10px; border-radius:4px; font-weight:bold; font-size:13px; display:inline-block;">{{ $total_result }}</span>
                                 </td>
                             </tr>
                         </tfoot>
@@ -170,6 +176,75 @@
             </div>
         </div>
     </div>
+
+    @if(!empty($mapping_data))
+    <div class="row" id="mapping-section" style="margin-top: 20px;">
+        <div class="col-md-12">
+            <div class="stat-card">
+                <div class="stat-title" style="color: #000; font-size: 22px;">Mapping Product Compare</div>
+                <div class="table-responsive">
+                    <table class="custom-table">
+                        <thead>
+                            <tr>
+                                <th style="text-align:left; width:30%;">Product</th>
+                                <th style="width:8%;">Qty</th>
+                                <th style="width:20%;">1 VS 1</th>
+                                <th style="width:30%;">Total Compare</th>
+                                <th style="width:12%;">Result</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach($mapping_data as $gi => $group)
+                            @php $rowspan = count($group['competitors']) + 1; @endphp
+                            <tr style="background:#f5f5f5;">
+                                <td style="text-align:left; font-weight:bold; color:#333;">{{ ($gi + 1) . '. ' . $group['own_name'] }}</td>
+                                <td style="color:#4caf50; font-weight:bold;">{{ (int)$group['own_qty'] }}</td>
+                                <td><span style="background:#e0e0e0; padding:2px 10px; border-radius:4px; font-size:12px; color:#555; font-weight:bold;">Base Own</span></td>
+                                <td rowspan="{{ $rowspan }}" style="vertical-align:middle;">
+                                    <div style="font-size:12px;">
+                                        <div style="display:flex; align-items:center; gap:5px; margin-bottom:4px;">
+                                            <span style="color:#4caf50; min-width:34px; text-align:right; font-weight:bold;">Own</span>
+                                            <div style="flex:1; height:8px; background:#e8f5e9; border-radius:4px; overflow:hidden;">
+                                                <div style="width:{{ $group['own_pct'] }}%; height:100%; background:#4caf50;"></div>
+                                            </div>
+                                            <span style="color:#333; white-space:nowrap;">{{ (int)$group['own_qty'] }} ({{ $group['own_pct'] }}%)</span>
+                                        </div>
+                                        <div style="display:flex; align-items:center; gap:5px;">
+                                            <span style="color:#f44336; min-width:34px; text-align:right; font-weight:bold;">Other</span>
+                                            <div style="flex:1; height:8px; background:#ffebee; border-radius:4px; overflow:hidden;">
+                                                <div style="width:{{ $group['other_pct'] }}%; height:100%; background:#f44336;"></div>
+                                            </div>
+                                            <span style="color:#333; white-space:nowrap;">{{ (int)$group['total_competitor_qty'] }} ({{ $group['other_pct'] }}%)</span>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td rowspan="{{ $rowspan }}" style="vertical-align:middle;">
+                                    <span style="background:{{ $group['result'] === 'WIN' ? '#e8f5e9' : '#ffebee' }}; color:{{ $group['result'] === 'WIN' ? '#2e7d32' : '#c62828' }}; padding:4px 12px; border-radius:4px; font-weight:bold; font-size:13px; display:inline-block;">
+                                        {{ $group['result'] }}
+                                    </span>
+                                </td>
+                            </tr>
+                            @foreach($group['competitors'] as $comp)
+                            <tr>
+                                <td style="text-align:left; color:#888; padding-left:30px; font-size:13px;">↳ {{ $comp['name'] }}</td>
+                                <td style="color:{{ $comp['win'] ? '#4caf50' : '#f44336' }}; font-weight:bold;">{{ (int)$comp['qty'] }}</td>
+                                <td style="color:{{ $comp['win'] ? '#4caf50' : '#f44336' }}; font-weight:bold; font-size:12px;">{{ $comp['result'] }}</td>
+                            </tr>
+                            @endforeach
+                            <tr style="background:#fff9c4;">
+                                <td colspan="2" style="text-align:right; color:#888; font-size:13px; font-style:italic;"><strong>Market Size</strong></td>
+                                <td style="font-weight:bold; color:#333; text-align:center;">{{ (int)$group['market_size'] }}</td>
+                                <td></td>
+                                <td></td>
+                            </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    @endif
 </div>
 @endsection
 
@@ -210,114 +285,118 @@
             e.preventDefault();
             var $btn = $(this);
             var originalText = $btn.html();
-            
-            // Show loading state
             $btn.html('<i class="fa fa-spinner fa-spin"></i> Sending...').prop('disabled', true);
 
-            // Capture the wrapper using html2canvas
-            html2canvas(document.querySelector(".summary-wrapper"), {
-                scale: 2, // High quality image
-                useCORS: true,
-                onclone: function(document_clone) {
-                    // --- SNAPSHOT FORMATTING (Mobile Layout) ---
-                    var cloneWrapper = document_clone.querySelector(".summary-wrapper");
-                    
-                    // 1. Set a clean Tablet width 
-                    cloneWrapper.style.width = '768px'; 
-                    cloneWrapper.style.padding = '20px';
-                    cloneWrapper.style.margin = '0';
-                    cloneWrapper.style.minHeight = 'auto';
-                    
-                    // 2. Hide the Telegram button in the snapshot
-                    var btn = cloneWrapper.querySelector('#btnSendTelegram');
-                    if (btn) btn.style.display = 'none';
+            var $mappingSection = $('#mapping-section');
+            var hasMappingSection = $mappingSection.length > 0;
 
-                    // 3. Stack the top columns neatly
-                    var cols = cloneWrapper.querySelectorAll('.col-md-5, .col-md-7');
-                    cols.forEach(function(col) {
-                        col.style.flex = '0 0 100%';
-                        col.style.maxWidth = '100%';
-                        col.style.padding = '0 15px'; 
-                        col.style.marginBottom = '20px'; 
-                    });
-                    
-                    var tableCol = cloneWrapper.querySelector('.col-md-12');
-                    if(tableCol) {
-                        tableCol.style.padding = '0 15px';
-                    }
+            // onclone formatting for the main summary image
+            var mainOnClone = function(document_clone) {
+                var cloneWrapper = document_clone.querySelector('.summary-wrapper');
+                cloneWrapper.style.width    = '768px';
+                cloneWrapper.style.padding  = '20px';
+                cloneWrapper.style.margin   = '0';
+                cloneWrapper.style.minHeight = 'auto';
 
-                    // 4. Clean up Fonts (Reverting to normal/elegant sizes)
-                    // Header
-                    var headerH2 = cloneWrapper.querySelector('.header-info h2');
-                    if (headerH2) headerH2.style.fontSize = '26px';
-                    var headerP = cloneWrapper.querySelector('.header-info p');
-                    if (headerP) headerP.style.fontSize = '16px';
+                var btn = cloneWrapper.querySelector('#btnSendTelegram');
+                if (btn) btn.style.display = 'none';
 
-                    // Cards & Numbers
-                    var titles = cloneWrapper.querySelectorAll('.stat-title');
-                    titles.forEach(t => { t.style.fontSize = '22px'; t.style.marginBottom = '15px'; });
-                    
-                    var values = cloneWrapper.querySelectorAll('.stat-value');
-                    values.forEach(v => v.style.fontSize = '36px');
-                    
-                    var targets = cloneWrapper.querySelectorAll('.target-row');
-                    targets.forEach(t => { 
-                        t.style.fontSize = '16px'; 
-                        t.style.display = 'flex';
-                        t.style.alignItems = 'center'; 
-                        t.style.marginBottom = '8px';
-                    });
+                // Hide mapping section in clone so it's not in image 1
+                var mappingClone = cloneWrapper.querySelector('#mapping-section');
+                if (mappingClone) mappingClone.style.display = 'none';
 
-                    // Adjust Chart Container
-                    var chartContainer = cloneWrapper.querySelector('.chart-container');
-                    if (chartContainer) chartContainer.style.height = '240px';
-
-                    // Clean Table
-                    var ths = cloneWrapper.querySelectorAll('.custom-table th');
-                    ths.forEach(th => { 
-                        th.style.fontSize = '15px'; 
-                        th.style.padding = '12px 5px'; 
-                        th.style.whiteSpace = 'nowrap'; 
-                    });
-                    
-                    var tds = cloneWrapper.querySelectorAll('.custom-table td');
-                    tds.forEach(td => { 
-                        td.style.fontSize = '15px'; 
-                        td.style.padding = '12px 5px'; 
-                    });
-                }
-            }).then(canvas => {
-                // Convert canvas to Base64 image
-                var base64image = canvas.toDataURL("image/png");
-
-                // Send via AJAX to Laravel Controller
-                $.ajax({
-                    url: '{{ route("daily-sale-visit-summary.send-telegram") }}',
-                    type: 'POST',
-                    data: {
-                        _token: '{{ csrf_token() }}',
-                        image: base64image
-                    },
-                    success: function(response) {
-                        if(response.success) {
-                            toastr.success(response.message);
-                        } else {
-                            toastr.error('Failed: ' + response.message);
-                        }
-                    },
-                    error: function() {
-                        toastr.error('An error occurred while sending to Telegram.');
-                    },
-                    complete: function() {
-                        // Reset button state
-                        $btn.html(originalText).prop('disabled', false);
-                    }
+                var cols = cloneWrapper.querySelectorAll('.col-md-5, .col-md-7');
+                cols.forEach(function(col) {
+                    col.style.flex = '0 0 100%';
+                    col.style.maxWidth = '100%';
+                    col.style.padding = '0 15px';
+                    col.style.marginBottom = '20px';
                 });
-            }).catch(err => {
+                var tableCol = cloneWrapper.querySelector('.col-md-12');
+                if (tableCol) tableCol.style.padding = '0 15px';
+
+                var headerH2 = cloneWrapper.querySelector('.header-info h2');
+                if (headerH2) headerH2.style.fontSize = '26px';
+                var headerP = cloneWrapper.querySelector('.header-info p');
+                if (headerP) headerP.style.fontSize = '16px';
+
+                cloneWrapper.querySelectorAll('.stat-title').forEach(function(t) { t.style.fontSize = '22px'; t.style.marginBottom = '15px'; });
+                cloneWrapper.querySelectorAll('.stat-value').forEach(function(v) { v.style.fontSize = '36px'; });
+                cloneWrapper.querySelectorAll('.target-row').forEach(function(t) { t.style.fontSize = '16px'; t.style.display = 'flex'; t.style.alignItems = 'center'; t.style.marginBottom = '8px'; });
+
+                var chartContainer = cloneWrapper.querySelector('.chart-container');
+                if (chartContainer) chartContainer.style.height = '240px';
+
+                cloneWrapper.querySelectorAll('.custom-table th').forEach(function(th) { th.style.fontSize = '15px'; th.style.padding = '12px 5px'; th.style.whiteSpace = 'nowrap'; });
+                cloneWrapper.querySelectorAll('.custom-table td').forEach(function(td) { td.style.fontSize = '15px'; td.style.padding = '12px 5px'; });
+            };
+
+            // Step 1: Capture main summary (mapping section excluded via onclone)
+            html2canvas(document.querySelector('.summary-wrapper'), {
+                scale: 2,
+                useCORS: true,
+                onclone: mainOnClone
+            }).then(function(canvas1) {
+                var image1 = canvas1.toDataURL('image/png');
+
+                if (!hasMappingSection) {
+                    // No mapping data — send image 1 only
+                    sendToTelegram(image1, null, $btn, originalText);
+                    return;
+                }
+
+                // Step 2: Capture the mapping section element only
+                html2canvas($mappingSection[0], {
+                    scale: 2,
+                    useCORS: true,
+                    backgroundColor: '#aaeef3',
+                    onclone: function(document_clone) {
+                        var el = document_clone.getElementById('mapping-section');
+                        if (el) {
+                            el.style.padding   = '20px';
+                            el.style.marginTop = '0';
+                        }
+                        document_clone.querySelectorAll('.custom-table th').forEach(function(th) { th.style.fontSize = '15px'; th.style.padding = '12px 5px'; th.style.whiteSpace = 'nowrap'; });
+                        document_clone.querySelectorAll('.custom-table td').forEach(function(td) { td.style.fontSize = '15px'; td.style.padding = '12px 5px'; });
+                    }
+                }).then(function(canvas2) {
+                    var image2 = canvas2.toDataURL('image/png');
+                    sendToTelegram(image1, image2, $btn, originalText);
+                }).catch(function(err) {
+                    $btn.html(originalText).prop('disabled', false);
+                    toastr.error('Failed to capture mapping snapshot: ' + err.message);
+                });
+
+            }).catch(function(err) {
                 $btn.html(originalText).prop('disabled', false);
                 toastr.error('Failed to capture snapshot: ' + err.message);
             });
         });
+
+        function sendToTelegram(image1, image2, $btn, originalText) {
+            $.ajax({
+                url: '{{ route("daily-sale-visit-summary.send-telegram") }}',
+                type: 'POST',
+                data: {
+                    _token: '{{ csrf_token() }}',
+                    image: image1,
+                    image_mapping: image2
+                },
+                success: function(response) {
+                    if (response.success) {
+                        toastr.success(response.message);
+                    } else {
+                        toastr.error('Failed: ' + response.message);
+                    }
+                },
+                error: function() {
+                    toastr.error('An error occurred while sending to Telegram.');
+                },
+                complete: function() {
+                    $btn.html(originalText).prop('disabled', false);
+                }
+            });
+        }
     });
 </script>
 @endsection

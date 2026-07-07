@@ -717,8 +717,8 @@ class CustomerRingBalanceController extends Controller
                                 if ($cashRingBalance->type_currency == 1) {
                                     $totalAmountInDollar += $redemptionValue;
                                 } else {
-                                    // Riel: convert to dollar (divide by 4000)
-                                    $totalAmountInDollar += ($redemptionValue / $exchangeRate);
+                                    // Riel: always divide by fixed 4000 for StockCashRingBalanceCustomer
+                                    $totalAmountInDollar += ($redemptionValue / 4000);
                                 }
                             }
                         }
@@ -727,7 +727,7 @@ class CustomerRingBalanceController extends Controller
                     // Update customer total balance in dollars
                     if ($totalAmountInDollar > 0) {
                         $contactId = $data['sell_list_filter_contact_id'];
-                        
+
                         $stockCashEntry = StockCashRingBalanceCustomer::where('contact_id', $contactId)
                             ->where('business_id', $businessId)
                             ->first();
@@ -740,7 +740,7 @@ class CustomerRingBalanceController extends Controller
                                 ->update([
                                     'total_cuurency_dollar' => \DB::raw('total_cuurency_dollar + ' . $totalAmountInDollar),
                                 ]);
-                                
+
                             \Log::info('Updated existing cash ring balance:', [
                                 'contact_id' => $contactId,
                                 'business_id' => $businessId,
@@ -1153,8 +1153,8 @@ class CustomerRingBalanceController extends Controller
                                 if ($cashRingBalance->type_currency == 1) {
                                     $totalAmountInDollar += $redemptionValue;
                                 } else {
-                                    // Riel: convert to dollar (divide by 4000)
-                                    $totalAmountInDollar += ($redemptionValue / $exchangeRate);
+                                    // Riel: always divide by fixed 4000 for customer balance conversion
+                                    $totalAmountInDollar += ($redemptionValue / 4000);
                                 }
                             }
                         }

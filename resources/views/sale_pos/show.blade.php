@@ -379,6 +379,11 @@
         </div>
       </div>
     </div>
+
+
+
+
+
     <div class="row">
       <div class="col-sm-6">
         <strong>{{ __( 'sale.sell_note')}}:</strong><br>

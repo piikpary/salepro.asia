@@ -40,12 +40,20 @@
 <script type="text/javascript">
     $(document).ready(function(){
         $(document).on('click', '#print_invoice', function(){
-            $('#invoice_content').printThis();
+            @if(!empty($receipt['rotate_90']))
+                __print_receipt_rotate90_el(document.getElementById('invoice_content'));
+            @else
+                $('#invoice_content').printThis();
+            @endif
         });
     });
     @if(!empty(request()->input('print_on_load')))
         $(window).on('load', function(){
-            $('#invoice_content').printThis();
+            @if(!empty($receipt['rotate_90']))
+                __print_receipt_rotate90_el(document.getElementById('invoice_content'));
+            @else
+                $('#invoice_content').printThis();
+            @endif
         });
     @endif
 </script>

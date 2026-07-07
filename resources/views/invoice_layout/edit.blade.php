@@ -77,9 +77,19 @@
                 <div class="form-group">
                     <div class="checkbox">
                     <label>
-                        {!! Form::checkbox('show_letter_head', 1, $invoice_layout->show_letter_head, 
-                            ['class' => 'input-icheck', 'id' => 'show_letter_head']); !!} 
+                        {!! Form::checkbox('show_letter_head', 1, $invoice_layout->show_letter_head,
+                            ['class' => 'input-icheck', 'id' => 'show_letter_head']); !!}
                             @lang('lang_v1.show_letter_head')</label>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-6">
+                <div class="form-group">
+                    <div class="checkbox">
+                    <label>
+                        {!! Form::checkbox('rotate_90', 1, !empty($invoice_layout->rotate_90) ? 1 : 0,
+                            ['class' => 'input-icheck']); !!}
+                            Rotate 90 (Landscape Print)</label>
                     </div>
                 </div>
             </div>
@@ -199,6 +209,13 @@
             {!! Form::label('sales_order_heading', __('lang_v1.sales_order_heading') . ':' ) !!}
             {!! Form::text('common_settings[sales_order_heading]', !empty($invoice_layout->common_settings['sales_order_heading']) ? $invoice_layout->common_settings['sales_order_heading'] : null, ['class' => 'form-control',
               'placeholder' => __('lang_v1.sales_order_heading'), 'id' => 'sales_order_heading' ]); !!}
+          </div>
+        </div>
+
+        <div class="col-sm-3">
+          <div class="form-group">
+            {!! Form::label('dn_heading', 'Delivery Note Heading:') !!}
+            {!! Form::text('dn_heading', $invoice_layout->dn_heading, ['class' => 'form-control', 'placeholder' => 'Delivery Note']); !!}
           </div>
         </div>
 
@@ -660,7 +677,14 @@
               'placeholder' => __('Payment Partial') ]); !!}
           </div>
         </div>
-        
+        <div class="col-sm-3">
+          <div class="form-group">
+            {!! Form::label('marketing_price_label', __('Marketing Price Label') . ':' ) !!}
+            {!! Form::text('marketing_price_label', $invoice_layout->marketing_price_label, ['class' => 'form-control',
+              'placeholder' => __('Marketing Price Label') ]); !!}
+          </div>
+        </div>
+
         <div class="col-sm-12">
           <h4>@lang('lang_v1.product_details_to_be_shown'):</h4>
         </div>

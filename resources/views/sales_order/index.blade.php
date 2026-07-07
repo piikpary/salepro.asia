@@ -68,6 +68,7 @@
                         <th>@lang('messages.action')</th>
                         <th>@lang('messages.date')</th>
                         <th>@lang('restaurant.order_no')</th>
+                        <th>Delivery Note</th>
                         <th>@lang('sale.customer_name')</th>
                         <th>@lang('lang_v1.contact_no')</th>
                         <th>@lang('sale.location')</th>
@@ -238,15 +239,16 @@ $(document).ready(function(){
                 }
             }
         },
-        columnDefs: [ 
+        columnDefs: [
             {
-                "targets": 8, // CHANGED: Shipping Status is now here (was 7)
+                // Delivery Note col (3) and Shipping Status (9) — not orderable/searchable
+                "targets": [3, 9],
                 "orderable": false,
                 "searchable": false
             },
             {
-                // Custom rendering for status column (Index 6 - Unchanged)
-                "targets": 6,
+                // Custom rendering for status column (Index 7 after new DN col at 3)
+                "targets": 7,
                 "render": function(data, type, row) {
                     if (type === 'display') {
                         var statusText = $('<div>').html(data).text().toLowerCase().trim();
@@ -255,8 +257,8 @@ $(document).ready(function(){
                             var isEditable = ['partial', 'ordered'].includes(statusText) && row.type === 'sales_order';
                             var className = isEditable ? 'edit-so-status' : '';
                             var dataAttr = isEditable ? ' data-transaction-id="' + row.id + '"' : '';
-                            return '<span class="label ' + className + '" style="background-color: ' + statusColors[statusText] + ' !important; color: white !important; border: none !important; padding: 4px 8px; border-radius: 3px; font-size: 11px; font-weight: bold; cursor: ' + (isEditable ? 'pointer' : 'default') + ';"' + dataAttr + '>' + 
-                                   (statusText.charAt(0).toUpperCase() + statusText.slice(1)) + 
+                            return '<span class="label ' + className + '" style="background-color: ' + statusColors[statusText] + ' !important; color: white !important; border: none !important; padding: 4px 8px; border-radius: 3px; font-size: 11px; font-weight: bold; cursor: ' + (isEditable ? 'pointer' : 'default') + ';"' + dataAttr + '>' +
+                                   (statusText.charAt(0).toUpperCase() + statusText.slice(1)) +
                                    '</span>';
                         }
                         return data;
@@ -265,10 +267,8 @@ $(document).ready(function(){
                 }
             },
             {
-                // Format quantity columns with 2 decimal places
-                // CHANGED: Targets 9, 10, 11 (Quantity, Remaining, KPI)
-                // Delivery Person (7) and Shipping Status (8) are skipped
-                "targets": [9, 10, 11],
+                // Quantity columns (10, 11, 12) — shifted +1 from new DN col
+                "targets": [10, 11, 12],
                 "render": function(data, type, row) {
                     // Added check to prevent NaN on empty strings/nulls
                     if (type === 'display' && data !== null && data !== '' && !isNaN(data)) {
@@ -282,6 +282,7 @@ $(document).ready(function(){
             { data: 'action', name: 'action' },
             { data: 'transaction_date', name: 'transaction_date' },
             { data: 'invoice_no', name: 'invoice_no' },
+            { data: 'delivery_note_no', name: 'delivery_note_no', orderable: false, searchable: false },
             { data: 'conatct_name', name: 'conatct_name' },
             { data: 'mobile', name: 'contacts.mobile' },
             { data: 'business_location', name: 'bl.name' },
@@ -300,7 +301,7 @@ $(document).ready(function(){
     });
     
     // Handle click on status column
-    $('#sell_table tbody').on('click', 'td:nth-child(7) .edit-so-status', function(e) {
+    $('#sell_table tbody').on('click', 'td:nth-child(8) .edit-so-status', function(e) {
         e.stopPropagation(); // Prevent row click event
         var transactionId = $(this).data('transaction-id');
         if (transactionId) {
@@ -350,7 +351,7 @@ $(document).ready(function(){
     .clickable-row:hover {
         background-color: #f5f5f5 !important;
     }
-    td:nth-child(7) .edit-so-status:hover {
+    td:nth-child(8) .edit-so-status:hover {
         opacity: 0.8;
         cursor: pointer !important;
     }

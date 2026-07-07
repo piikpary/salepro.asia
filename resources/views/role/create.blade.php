@@ -840,6 +840,70 @@
         </div>
         </div>
         <hr>
+      @if(!empty($pos_settings['enable_delivery_note']))
+        <div class="row check_group">
+          <div class="col-md-1">
+            <h4>Delivery Note</h4>
+          </div>
+          <div class="col-md-2">
+            <div class="checkbox">
+              <label><input type="checkbox" class="check_all input-icheck"> {{ __('role.select_all') }}</label>
+            </div>
+          </div>
+          <div class="col-md-9">
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::radio('radio_option[dn_view]', 'delivery_note.view_all', false, ['class' => 'input-icheck']); !!} View all delivery notes
+            </label></div></div>
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::radio('radio_option[dn_view]', 'delivery_note.view_own', false, ['class' => 'input-icheck']); !!} View own delivery notes
+            </label></div></div>
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::checkbox('permissions[]', 'delivery_note.create', false, ['class' => 'input-icheck']); !!} Add delivery note
+            </label></div></div>
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::checkbox('permissions[]', 'delivery_note.update', false, ['class' => 'input-icheck']); !!} Edit delivery note
+            </label></div></div>
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::checkbox('permissions[]', 'delivery_note.delete', false, ['class' => 'input-icheck']); !!} Delete delivery note
+            </label></div></div>
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::checkbox('permissions[]', 'delivery_note.print', false, ['class' => 'input-icheck']); !!} Print delivery note
+            </label></div></div>
+          </div>
+        </div>
+        <hr>
+        <div class="row check_group">
+          <div class="col-md-1">
+            <h4>Delivery Return</h4>
+          </div>
+          <div class="col-md-2">
+            <div class="checkbox">
+              <label><input type="checkbox" class="check_all input-icheck"> {{ __('role.select_all') }}</label>
+            </div>
+          </div>
+          <div class="col-md-9">
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::radio('radio_option[dr_view]', 'delivery_return.view_all', false, ['class' => 'input-icheck']); !!} View all delivery returns
+            </label></div></div>
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::radio('radio_option[dr_view]', 'delivery_return.view_own', false, ['class' => 'input-icheck']); !!} View own delivery returns
+            </label></div></div>
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::checkbox('permissions[]', 'delivery_return.create', false, ['class' => 'input-icheck']); !!} Add delivery return
+            </label></div></div>
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::checkbox('permissions[]', 'delivery_return.update', false, ['class' => 'input-icheck']); !!} Edit delivery return
+            </label></div></div>
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::checkbox('permissions[]', 'delivery_return.delete', false, ['class' => 'input-icheck']); !!} Delete delivery return
+            </label></div></div>
+            <div class="col-md-12"><div class="checkbox"><label>
+              {!! Form::checkbox('permissions[]', 'delivery_return.print', false, ['class' => 'input-icheck']); !!} Print delivery return
+            </label></div></div>
+          </div>
+        </div>
+        <hr>
+      @endif
       @if(!empty($pos_settings['enable_sales_order']))
         <div class="row check_group">
           <div class="col-md-1">

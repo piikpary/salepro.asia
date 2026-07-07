@@ -3460,6 +3460,7 @@ private function getSalesByZoneData($business_id, $location_id, $start_date, $en
         })
         ->where('t.business_id', $business_id)
         ->where('t.type', 'sell')
+        ->where('t.status', 'final')
         ->whereBetween('t.transaction_date', [$start_date, $end_date])
         ->whereNull('t.deleted_at')
         ->whereNull('tsl.parent_sell_line_id')
@@ -4203,6 +4204,7 @@ private function getSalesDetailDataSale(
         })
         ->where('t.business_id', $business_id)
         ->where('t.type', 'sell')
+        ->where('t.status', 'final')
         ->whereBetween('t.transaction_date', [$start_date, $end_date])
         ->whereNull('t.deleted_at')
         ->whereNull('tsl.parent_sell_line_id')
@@ -4210,7 +4212,7 @@ private function getSalesDetailDataSale(
             $query->whereNull('tsl.children_type')
                     ->orWhere('tsl.children_type', '');
         });
-    
+
     // Search logic
     if (!empty($search_term)) {
         $query->where(function($q) use ($search_term, $business_id) {

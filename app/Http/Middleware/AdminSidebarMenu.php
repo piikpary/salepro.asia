@@ -270,6 +270,20 @@ class AdminSidebarMenu
                                 ['icon' => 'fa fas fa-plus-circle', 'active' => request()->segment(1) == 'sales-order']
                             );
                         }
+                        if (! empty($pos_settings['enable_delivery_note']) && ($is_admin || auth()->user()->hasAnyPermission(['delivery_note.view_all', 'delivery_note.view_own', 'delivery_note.create']))) {
+                            $sub->url(
+                                route('delivery-note.index'),
+                                'Delivery Note',
+                                ['icon' => 'fa fas fa-truck', 'active' => request()->segment(1) == 'delivery-note']
+                            );
+                        }
+                        if (! empty($pos_settings['enable_delivery_note']) && ($is_admin || auth()->user()->hasAnyPermission(['delivery_return.view_all', 'delivery_return.view_own', 'delivery_return.create']))) {
+                            $sub->url(
+                                route('delivery-return.index'),
+                                'Delivery Returns',
+                                ['icon' => 'fa fas fa-undo', 'active' => request()->segment(1) == 'delivery-return']
+                            );
+                        }
 
                         if ($is_admin || auth()->user()->hasAnyPermission(['sell.view', 'sell.create', 'direct_sell.access', 'direct_sell.view', 'view_own_sell_only', 'view_commission_agent_sell', 'access_shipping', 'access_own_shipping', 'access_commission_agent_shipping'])) {
                             $sub->url(
@@ -628,6 +642,67 @@ class AdminSidebarMenu
         ]
     )->order(82);
 }
+if (\Module::has('Accounting') && \Module::isEnabled('Accounting')) {
+    $menu->dropdown(
+        __('Accounting'),
+        function ($sub) {
+            $sub->url(
+                url('/accounting/dashboard'),
+                __('Dashboard'),
+                [
+                    'icon' => 'fa fas fa-tachometer-alt',
+                    'active' => request()->segment(1) == 'accounting'
+                        && request()->segment(2) == 'dashboard',
+                ]
+            );
+
+            $sub->url(
+                url('/accounting/chart-of-accounts'),
+                __('Accounts'),
+                [
+                    'icon' => 'fa fas fa-list',
+                    'active' => request()->segment(1) == 'accounting'
+                        && request()->segment(2) == 'chart-of-accounts',
+                ]
+            );
+
+            $sub->url(
+                url('/accounting/journal-entry'),
+                __('Journal Entry'),
+                [
+                    'icon' => 'fa fas fa-book',
+                    'active' => request()->segment(1) == 'accounting'
+                        && request()->segment(2) == 'journal-entry',
+                ]
+            );
+
+            $sub->url(
+                url('/accounting/transfer'),
+                __('Transfer'),
+                [
+                    'icon' => 'fa fas fa-exchange-alt',
+                    'active' => request()->segment(1) == 'accounting'
+                        && request()->segment(2) == 'transfer',
+                ]
+            );
+
+            $sub->url(
+                url('/accounting/reports'),
+                __('Reports'),
+                [
+                    'icon' => 'fa fas fa-chart-bar',
+                    'active' => request()->segment(1) == 'accounting'
+                        && request()->segment(2) == 'reports',
+                ]
+            );
+        },
+        [
+            'icon' => 'fa fas fa-calculator',
+            'active' => request()->segment(1) == 'accounting',
+        ]
+    )->order(83);
+}
+
 
 
             //Reports dropdown
@@ -1058,6 +1133,11 @@ class AdminSidebarMenu
                             action([\App\Http\Controllers\ProductSaleVisitController::class, 'index']),
                             __('Product Sale Visit Setting'),
                             ['icon' => 'fa fas fa-user-circle', 'active' => request()->segment(1) == 'product_sale_visit']
+                        );
+                         $sub->url(
+                            action([\App\Http\Controllers\AppSettingController::class, 'index']),
+                            __('App-settings'),
+                            ['icon' => 'fa fas fa-mobile-alt', 'active' => request()->segment(1) == 'app-settings']
                         );
                         if (auth()->user()->can('product_sale_target.access')) {
                             $sub->url(

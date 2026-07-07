@@ -416,6 +416,64 @@
 				</div>
 			@endcomponent
 
+
+				@component('components.widget', ['class' => 'box-solid'])
+	@php
+		$current_sale_type = $sale_type ?? ($transaction->type ?? 'sell');
+		$is_stamp_enabled = !empty($business_details->enable_stamp_point);
+	@endphp
+
+	<div class="col-md-12 @if(empty($is_stamp_enabled)) hide @endif" id="stamp_point_sale_section">
+		<input type="hidden" name="stamp_earn_point_this_sale" id="stamp_earn_point_this_sale_input" value="0">
+		<input type="hidden" name="stamp_deduct_point" id="stamp_deduct_point_input" value="0">
+		<input type="hidden" name="stamp_claim_qty" id="stamp_claim_qty_input" value="0">
+		<input type="hidden" name="stamp_claim_amount" id="stamp_claim_amount" value="0">
+
+		<h4 style="margin-top: 0; margin-bottom: 15px;">Earn / Claim Point</h4>
+
+		<div class="well well-sm bg-light-gray">
+			<div class="table-responsive">
+				<table class="table table-bordered table-condensed" id="stamp_point_table">
+					<thead>
+						<tr>
+							<th style="width: 20%;">Earn Product</th>
+							<th style="width: 20%;">Claim Product</th>
+							<th style="width: 12%;">Available Point</th>
+							<th style="width: 12%;">Claim Qty</th>
+							<th style="width: 12%;">Deduct Point</th>
+							<th style="width: 12%;">Earn This Sale</th>
+							<th style="width: 12%;">Point After Sale</th>
+						</tr>
+					</thead>
+
+					<tbody>
+						<tr>
+							<td colspan="7" class="text-center text-muted">
+								Select customer or add product to see stamp point.
+							</td>
+						</tr>
+					</tbody>
+
+					<tfoot>
+						<tr class="bg-gray">
+							<th colspan="3" class="text-right">Total:</th>
+							<th><span id="stamp_claim_qty">0</span></th>
+							<th><span id="stamp_deduct_point">0</span></th>
+							<th><span id="stamp_earn_point_this_sale">0</span></th>
+							<th><span id="stamp_total_point_after_sale">0</span></th>
+						</tr>
+					</tfoot>
+				</table>
+			</div>
+
+			<div id="stamp_claim_inputs_container"></div>
+		</div>
+	</div>
+
+	<div class="clearfix"></div>
+@endcomponent
+
+
 			@component('components.widget', ['class' => 'box-solid'])
 				<div class="col-md-4 @if($transaction->type == 'sales_order') hide @endif">
 			        <div class="form-group">
@@ -963,6 +1021,825 @@
 					subtree: true
 				});
 			}
+
+		var stampPointRules = @json($stamp_point_rules ?? []);
+var customerStampPoints = @json($customer_stamp_points ?? []);
+var transactionStampClaims = @json($transaction_stamp_claims ?? []);
+
+function stampCleanNumber(value) {
+	value = value || 0;
+	value = value.toString().replace(/,/g, '');
+	value = parseFloat(value);
+
+	return isNaN(value) ? 0 : value;
+}
+
+function stampFormatNumber(value) {
+	value = stampCleanNumber(value);
+
+	if (value % 1 === 0) {
+		return value.toString();
+	}
+
+	return value.toFixed(4).replace(/\.?0+$/, '');
+}
+
+function stampEscapeHtml(value) {
+	value = value || '';
+
+	return value.toString()
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#039;');
+}
+
+function getSelectedStampCustomerId() {
+	var customerId = $('#customer_id').val();
+
+	if ($.isArray(customerId)) {
+		customerId = customerId[0];
+	}
+
+	return customerId ? customerId.toString() : '';
+}
+
+function makeStampKey(productId, claimProductId) {
+	productId = productId || '';
+	claimProductId = claimProductId || '';
+
+	return productId.toString() + '_' + claimProductId.toString();
+}
+
+function getStampRulesForProduct(productId) {
+	if (!productId || !stampPointRules[productId]) {
+		return [];
+	}
+
+	if ($.isArray(stampPointRules[productId])) {
+		return stampPointRules[productId];
+	}
+
+	return [stampPointRules[productId]];
+}
+
+function getAllStampRules() {
+	var allRules = [];
+
+	$.each(stampPointRules, function (productId, rules) {
+		if ($.isArray(rules)) {
+			allRules = allRules.concat(rules);
+		} else {
+			allRules.push(rules);
+		}
+	});
+
+	return allRules;
+}
+
+function getStampProductLabel(rule, productId) {
+	if (rule.product_name) {
+		return rule.product_name;
+	}
+
+	if (rule.product && rule.product.name) {
+		return rule.product.name + (rule.product.sku ? ' - ' + rule.product.sku : '');
+	}
+
+	return productId ? 'Product #' + productId : '-';
+}
+
+function getStampClaimProductLabel(rule, claimProductId) {
+	if (rule.claim_product_name) {
+		return rule.claim_product_name;
+	}
+
+	if (rule.claim_product && rule.claim_product.name) {
+		return rule.claim_product.name + (rule.claim_product.sku ? ' - ' + rule.claim_product.sku : '');
+	}
+
+	if (rule.claimProduct && rule.claimProduct.name) {
+		return rule.claimProduct.name + (rule.claimProduct.sku ? ' - ' + rule.claimProduct.sku : '');
+	}
+
+	return claimProductId ? 'Product #' + claimProductId : '-';
+}
+
+function calculateEligiblePointByCycle(totalQty, rules) {
+	totalQty = Math.floor(stampCleanNumber(totalQty));
+
+	if (totalQty <= 0 || !(rules || []).length) {
+		return 0;
+	}
+
+	var ruleMap = {};
+
+	$.each(rules || [], function (index, rule) {
+		var ruleQty = Math.floor(stampCleanNumber(rule.stamp_qty));
+		var earnPoint = stampCleanNumber(rule.earn_point);
+
+		if (ruleQty <= 0 || earnPoint <= 0) {
+			return;
+		}
+
+		if (typeof ruleMap[ruleQty] === 'undefined' || earnPoint > ruleMap[ruleQty]) {
+			ruleMap[ruleQty] = earnPoint;
+		}
+	});
+
+	var dp = [];
+
+	for (var i = 0; i <= totalQty; i++) {
+		dp[i] = 0;
+	}
+
+	for (var qty = 1; qty <= totalQty; qty++) {
+		$.each(ruleMap, function (ruleQty, earnPoint) {
+			ruleQty = parseInt(ruleQty);
+
+			if (qty >= ruleQty) {
+				dp[qty] = Math.max(
+					dp[qty],
+					dp[qty - ruleQty] + stampCleanNumber(earnPoint)
+				);
+			}
+		});
+	}
+
+	return dp[totalQty];
+}
+function calculateEligibleClaimQtyByCycle(totalPoint, rules) {
+	totalPoint = Math.floor(stampCleanNumber(totalPoint));
+
+	if (totalPoint <= 0 || !(rules || []).length) {
+		return 0;
+	}
+
+	var ruleMap = {};
+
+	$.each(rules || [], function (index, rule) {
+		var rulePoint = Math.floor(stampCleanNumber(rule.earn_point));
+		var claimQty = stampCleanNumber(rule.claim_qty);
+
+		if (rulePoint <= 0 || claimQty <= 0) {
+			return;
+		}
+
+		if (typeof ruleMap[rulePoint] === 'undefined' || claimQty > ruleMap[rulePoint]) {
+			ruleMap[rulePoint] = claimQty;
+		}
+	});
+
+	var dp = [];
+
+	for (var i = 0; i <= totalPoint; i++) {
+		dp[i] = 0;
+	}
+
+	for (var point = 1; point <= totalPoint; point++) {
+		$.each(ruleMap, function (rulePoint, claimQty) {
+			rulePoint = parseInt(rulePoint);
+
+			if (point >= rulePoint) {
+				dp[point] = Math.max(
+					dp[point],
+					dp[point - rulePoint] + stampCleanNumber(claimQty)
+				);
+			}
+		});
+	}
+
+	return dp[totalPoint];
+}
+
+function calculateClaimPointByAvailableRatio(claimQty, availablePoint, availableClaimQty) {
+	claimQty = stampCleanNumber(claimQty);
+	availablePoint = stampCleanNumber(availablePoint);
+	availableClaimQty = stampCleanNumber(availableClaimQty);
+
+	if (claimQty <= 0 || availablePoint <= 0 || availableClaimQty <= 0) {
+		return 0;
+	}
+
+	return claimQty * (availablePoint / availableClaimQty);
+}
+
+function normalizeCustomerStampBalances(customerId) {
+	var balances = [];
+
+	if (!customerId) {
+		return balances;
+	}
+
+	if (customerStampPoints[customerId]) {
+		if ($.isArray(customerStampPoints[customerId])) {
+			balances = customerStampPoints[customerId];
+		} else if (typeof customerStampPoints[customerId] === 'object') {
+			balances = [customerStampPoints[customerId]];
+		}
+	} else if ($.isArray(customerStampPoints)) {
+		$.each(customerStampPoints, function (index, balance) {
+			if (balance.contact_id && balance.contact_id.toString() == customerId) {
+				balances.push(balance);
+			}
+		});
+	}
+
+	return balances;
+}
+
+function buildOldStampClaimMap() {
+	var oldClaimMap = {};
+
+	if ($.isArray(transactionStampClaims)) {
+		$.each(transactionStampClaims, function (index, claim) {
+			var key = makeStampKey(claim.product_id, claim.claim_product_id);
+
+			if (!oldClaimMap[key]) {
+				oldClaimMap[key] = {
+					product_id: claim.product_id,
+					claim_product_id: claim.claim_product_id,
+					sale_qty: 0,
+					earned_point: 0,
+					claimed_point: 0,
+					claim_qty: 0,
+					balance_before: undefined,
+					total_qty_before: undefined,
+					claimed_qty_before: undefined
+				};
+			}
+
+			oldClaimMap[key].sale_qty += stampCleanNumber(claim.sale_qty);
+			oldClaimMap[key].earned_point += stampCleanNumber(claim.earned_point);
+			oldClaimMap[key].claimed_point += stampCleanNumber(claim.claimed_point);
+			oldClaimMap[key].claim_qty += stampCleanNumber(claim.claim_qty);
+
+			if (typeof claim.balance_before !== 'undefined') {
+				oldClaimMap[key].balance_before = stampCleanNumber(claim.balance_before);
+			}
+
+			if (typeof claim.total_qty_before !== 'undefined') {
+				oldClaimMap[key].total_qty_before = stampCleanNumber(claim.total_qty_before);
+			}
+
+			if (typeof claim.claimed_qty_before !== 'undefined') {
+				oldClaimMap[key].claimed_qty_before = stampCleanNumber(claim.claimed_qty_before);
+			}
+		});
+	}
+
+	return oldClaimMap;
+}
+
+function buildBalanceMap(customerId) {
+	var balances = normalizeCustomerStampBalances(customerId);
+	var oldClaimMap = buildOldStampClaimMap();
+	var balanceMap = {};
+
+	$.each(balances, function (index, balance) {
+		var productId = balance.product_id || '';
+		var claimProductId = balance.claim_product_id || '';
+		var key = makeStampKey(productId, claimProductId);
+		var oldClaim = oldClaimMap[key] || null;
+
+		var pointBalance = stampCleanNumber(balance.point_balance);
+		var totalQty = stampCleanNumber(balance.total_qty);
+		var claimedQty = stampCleanNumber(balance.claimed_qty);
+		var claimedPoint = stampCleanNumber(balance.claimed_point);
+
+		if (oldClaim) {
+			if (typeof oldClaim.balance_before !== 'undefined') {
+				pointBalance = stampCleanNumber(oldClaim.balance_before);
+			} else {
+				pointBalance = pointBalance - stampCleanNumber(oldClaim.earned_point) + stampCleanNumber(oldClaim.claimed_point);
+			}
+
+			if (typeof oldClaim.total_qty_before !== 'undefined') {
+				totalQty = stampCleanNumber(oldClaim.total_qty_before);
+			} else {
+				totalQty = totalQty - stampCleanNumber(oldClaim.sale_qty);
+			}
+
+			if (typeof oldClaim.claimed_qty_before !== 'undefined') {
+				claimedQty = stampCleanNumber(oldClaim.claimed_qty_before);
+			} else {
+				claimedQty = claimedQty - stampCleanNumber(oldClaim.claim_qty);
+			}
+
+			claimedPoint = claimedPoint - stampCleanNumber(oldClaim.claimed_point);
+		}
+
+		if (pointBalance < 0) {
+			pointBalance = 0;
+		}
+
+		if (totalQty < 0) {
+			totalQty = 0;
+		}
+
+		if (claimedQty < 0) {
+			claimedQty = 0;
+		}
+
+		if (claimedPoint < 0) {
+			claimedPoint = 0;
+		}
+
+		balanceMap[key] = {
+			product_id: productId,
+			claim_product_id: claimProductId,
+			product_name: balance.product_name || balance.product_label || 'Product #' + productId,
+			claim_product_name: balance.claim_product_name || balance.claim_product_label || (claimProductId ? 'Product #' + claimProductId : '-'),
+			point_balance: pointBalance,
+			total_qty: totalQty,
+			claimed_qty: claimedQty,
+			claimed_point: claimedPoint
+		};
+	});
+
+	return balanceMap;
+}
+
+function getCurrentProductQtyMap() {
+	var qtyMap = {};
+
+	$('input[name^="products"][name$="[product_id]"]').each(function () {
+		var productId = $(this).val();
+		var row = $(this).closest('tr');
+
+		if (!productId) {
+			return;
+		}
+
+		var qtyInput = row.find('input[name^="products"][name$="[quantity]"]');
+
+		if (!qtyInput.length) {
+			qtyInput = row.find('.pos_quantity');
+		}
+
+		var qty = stampCleanNumber(qtyInput.val());
+
+		if (qty <= 0) {
+			return;
+		}
+
+		if (!qtyMap[productId]) {
+			qtyMap[productId] = 0;
+		}
+
+		qtyMap[productId] += qty;
+	});
+
+	return qtyMap;
+}
+
+function getRulesForStampPointRow(productId, claimProductId) {
+	var rules = getStampRulesForProduct(productId);
+	var filteredRules = [];
+
+	$.each(rules, function (index, rule) {
+		var ruleClaimProductId = rule.claim_product_id || '';
+
+		if (ruleClaimProductId.toString() == (claimProductId || '').toString()) {
+			filteredRules.push(rule);
+		}
+	});
+
+	return filteredRules;
+}
+
+function getCurrentSaleEarnMap() {
+	var earnMap = {};
+	var customerId = getSelectedStampCustomerId();
+	var balanceMap = buildBalanceMap(customerId);
+	var qtyMap = getCurrentProductQtyMap();
+
+	$.each(stampPointRules, function (productId, rules) {
+		var saleQty = stampCleanNumber(qtyMap[productId]);
+
+		if (saleQty <= 0) {
+			return;
+		}
+
+		rules = $.isArray(rules) ? rules : [rules];
+
+		var rulesByClaimProduct = {};
+
+		$.each(rules, function (index, rule) {
+			var claimProductId = rule.claim_product_id || '';
+
+			if (!rulesByClaimProduct[claimProductId]) {
+				rulesByClaimProduct[claimProductId] = [];
+			}
+
+			rulesByClaimProduct[claimProductId].push(rule);
+		});
+
+		$.each(rulesByClaimProduct, function (claimProductId, claimRules) {
+			var key = makeStampKey(productId, claimProductId);
+			var firstRule = claimRules[0];
+			var balanceRow = balanceMap[key] || {};
+
+			var totalQtyBefore = stampCleanNumber(balanceRow.total_qty);
+			var claimedQtyBefore = stampCleanNumber(balanceRow.claimed_qty);
+			var totalQtyAfter = totalQtyBefore + saleQty;
+
+			var eligiblePointBefore = calculateEligiblePointByCycle(totalQtyBefore, claimRules);
+			var eligiblePointAfter = calculateEligiblePointByCycle(totalQtyAfter, claimRules);
+
+			var earnedPoint = eligiblePointAfter - eligiblePointBefore;
+
+			if (earnedPoint < 0) {
+				earnedPoint = 0;
+			}
+
+			var eligibleClaimQtyAfter = calculateEligibleClaimQtyByCycle(eligiblePointAfter, claimRules);
+			var availableClaimQty = eligibleClaimQtyAfter - claimedQtyBefore;
+
+			if (availableClaimQty < 0) {
+				availableClaimQty = 0;
+			}
+
+			earnMap[key] = {
+				product_id: productId,
+				claim_product_id: claimProductId,
+				product_name: getStampProductLabel(firstRule, productId),
+				claim_product_name: getStampClaimProductLabel(firstRule, claimProductId),
+				sale_qty: saleQty,
+				total_qty_before: totalQtyBefore,
+				total_qty_after: totalQtyAfter,
+				claimed_qty_before: claimedQtyBefore,
+				earned_point: earnedPoint,
+				available_claim_qty: availableClaimQty,
+				rules: claimRules
+			};
+		});
+	});
+
+	return earnMap;
+}
+
+function getCurrentSaleClaimQtyMap() {
+	var claimMap = {};
+	var allRules = getAllStampRules();
+	var qtyMap = getCurrentProductQtyMap();
+
+	$.each(qtyMap, function (selectedProductId, qty) {
+		if (!selectedProductId || qty <= 0) {
+			return;
+		}
+
+		var matchedRulesByKey = {};
+
+		$.each(allRules, function (index, rule) {
+			var claimProductId = rule.claim_product_id || '';
+
+			if (claimProductId.toString() != selectedProductId.toString()) {
+				return;
+			}
+
+			var earnProductId = rule.product_id || '';
+			var key = makeStampKey(earnProductId, claimProductId);
+
+			if (!matchedRulesByKey[key]) {
+				matchedRulesByKey[key] = {
+					product_id: earnProductId,
+					claim_product_id: claimProductId,
+					product_name: getStampProductLabel(rule, earnProductId),
+					claim_product_name: getStampClaimProductLabel(rule, claimProductId),
+					rules: []
+				};
+			}
+
+			matchedRulesByKey[key].rules.push(rule);
+		});
+
+		$.each(matchedRulesByKey, function (key, matchedRule) {
+			if (!claimMap[key]) {
+				claimMap[key] = {
+					product_id: matchedRule.product_id,
+					claim_product_id: matchedRule.claim_product_id,
+					product_name: matchedRule.product_name,
+					claim_product_name: matchedRule.claim_product_name,
+					input_claim_qty: 0,
+					rules: []
+				};
+			}
+
+			claimMap[key].input_claim_qty += stampCleanNumber(qty);
+			claimMap[key].rules = claimMap[key].rules.concat(matchedRule.rules);
+		});
+	});
+
+	return claimMap;
+}
+
+function buildStampSaveMap(balanceMap, earnMap, claimMap) {
+	var saveMap = {};
+
+	$.each(balanceMap, function (key, balanceRow) {
+		var rules = getRulesForStampPointRow(balanceRow.product_id, balanceRow.claim_product_id);
+
+		var eligiblePoint = calculateEligiblePointByCycle(
+	stampCleanNumber(balanceRow.total_qty),
+	rules
+);
+
+var eligibleClaimQty = calculateEligibleClaimQtyByCycle(
+	eligiblePoint,
+	rules
+);
+		var availableClaimQty = eligibleClaimQty - stampCleanNumber(balanceRow.claimed_qty);
+
+		if (availableClaimQty < 0) {
+			availableClaimQty = 0;
+		}
+
+		saveMap[key] = {
+			product_id: balanceRow.product_id,
+			claim_product_id: balanceRow.claim_product_id,
+			product_name: balanceRow.product_name,
+			claim_product_name: balanceRow.claim_product_name,
+			sale_qty: 0,
+			balance_before: stampCleanNumber(balanceRow.point_balance),
+			total_qty_before: stampCleanNumber(balanceRow.total_qty),
+			total_qty_after: stampCleanNumber(balanceRow.total_qty),
+			claimed_qty_before: stampCleanNumber(balanceRow.claimed_qty),
+			earned_point: 0,
+			claimed_point: 0,
+			claim_qty: 0,
+			available_claim_qty: availableClaimQty,
+			balance_after: stampCleanNumber(balanceRow.point_balance)
+		};
+	});
+
+	$.each(earnMap, function (key, earnRow) {
+		if (!saveMap[key]) {
+			saveMap[key] = {
+				product_id: earnRow.product_id,
+				claim_product_id: earnRow.claim_product_id,
+				product_name: earnRow.product_name,
+				claim_product_name: earnRow.claim_product_name,
+				sale_qty: 0,
+				balance_before: 0,
+				total_qty_before: stampCleanNumber(earnRow.total_qty_before),
+				total_qty_after: stampCleanNumber(earnRow.total_qty_after),
+				claimed_qty_before: stampCleanNumber(earnRow.claimed_qty_before),
+				earned_point: 0,
+				claimed_point: 0,
+				claim_qty: 0,
+				available_claim_qty: stampCleanNumber(earnRow.available_claim_qty),
+				balance_after: 0
+			};
+		}
+
+		saveMap[key].product_name = earnRow.product_name;
+		saveMap[key].claim_product_name = earnRow.claim_product_name;
+		saveMap[key].sale_qty += stampCleanNumber(earnRow.sale_qty);
+		saveMap[key].total_qty_before = stampCleanNumber(earnRow.total_qty_before);
+		saveMap[key].total_qty_after = stampCleanNumber(earnRow.total_qty_after);
+		saveMap[key].claimed_qty_before = stampCleanNumber(earnRow.claimed_qty_before);
+		saveMap[key].earned_point += stampCleanNumber(earnRow.earned_point);
+		saveMap[key].available_claim_qty = stampCleanNumber(earnRow.available_claim_qty);
+	});
+
+	$.each(claimMap, function (key, claimRow) {
+		if (!saveMap[key]) {
+			saveMap[key] = {
+				product_id: claimRow.product_id,
+				claim_product_id: claimRow.claim_product_id,
+				product_name: claimRow.product_name,
+				claim_product_name: claimRow.claim_product_name,
+				sale_qty: 0,
+				balance_before: 0,
+				total_qty_before: 0,
+				total_qty_after: 0,
+				claimed_qty_before: 0,
+				earned_point: 0,
+				claimed_point: 0,
+				claim_qty: 0,
+				available_claim_qty: 0,
+				balance_after: 0
+			};
+		}
+
+		var balanceBefore = stampCleanNumber(saveMap[key].balance_before);
+		var earnedPoint = stampCleanNumber(saveMap[key].earned_point);
+		var availablePoint = balanceBefore + earnedPoint;
+		var availableClaimQty = stampCleanNumber(saveMap[key].available_claim_qty);
+		var inputClaimQty = stampCleanNumber(claimRow.input_claim_qty);
+
+		if (inputClaimQty > availableClaimQty) {
+			inputClaimQty = availableClaimQty;
+		}
+
+		var deductPoint = calculateClaimPointByAvailableRatio(
+			inputClaimQty,
+			availablePoint,
+			availableClaimQty
+		);
+
+		if (deductPoint > availablePoint) {
+			deductPoint = availablePoint;
+		}
+
+		saveMap[key].product_name = claimRow.product_name;
+		saveMap[key].claim_product_name = claimRow.claim_product_name;
+		saveMap[key].claimed_point += deductPoint;
+		saveMap[key].claim_qty += inputClaimQty;
+	});
+
+	$.each(saveMap, function (key, row) {
+		row.balance_after = stampCleanNumber(row.balance_before)
+			+ stampCleanNumber(row.earned_point)
+			- stampCleanNumber(row.claimed_point);
+
+		if (row.balance_after < 0) {
+			row.balance_after = 0;
+		}
+	});
+
+	return saveMap;
+}
+
+function renderStampPointRows() {
+	var customerId = getSelectedStampCustomerId();
+	var balanceMap = buildBalanceMap(customerId);
+	var earnMap = getCurrentSaleEarnMap();
+	var claimMap = getCurrentSaleClaimQtyMap();
+	var saveMap = buildStampSaveMap(balanceMap, earnMap, claimMap);
+
+	var tbodyHtml = '';
+	var hasRows = false;
+
+	$.each(balanceMap, function (key, balanceRow) {
+		if (earnMap[key] || claimMap[key]) {
+			return;
+		}
+
+		hasRows = true;
+
+		var saveRow = saveMap[key] || {};
+		var balanceBefore = stampCleanNumber(saveRow.balance_before);
+		var availableForClaim = balanceBefore + earnPoint;
+
+var availableClaimQty = calculateEligibleClaimQtyByCycle(
+	availableForClaim,
+	earnRow.rules
+);
+		tbodyHtml += '<tr class="stamp-point-display-row">' +
+			'<td>' + stampEscapeHtml(balanceRow.product_name) + '</td>' +
+			'<td>' + stampEscapeHtml(balanceRow.claim_product_name) + '</td>' +
+			'<td>' + stampFormatNumber(balanceBefore) + '</td>' +
+			'<td>' + stampFormatNumber(availableClaimQty) + '</td>' +
+			'<td>0</td>' +
+			'<td>0</td>' +
+			'<td>' + stampFormatNumber(balanceBefore) + '</td>' +
+			'</tr>';
+	});
+
+	$.each(earnMap, function (key, earnRow) {
+		hasRows = true;
+
+		var saveRow = saveMap[key] || {};
+		var balanceBefore = stampCleanNumber(saveRow.balance_before);
+		var earnPoint = stampCleanNumber(saveRow.earned_point);
+		var pointAfter = balanceBefore + earnPoint;
+		var availableClaimQty = stampCleanNumber(saveRow.available_claim_qty);
+
+		tbodyHtml += '<tr class="stamp-point-display-row">' +
+			'<td>' + stampEscapeHtml(earnRow.product_name) + '</td>' +
+			'<td></td>' +
+			'<td>' + stampFormatNumber(balanceBefore) + '</td>' +
+			'<td>' + stampFormatNumber(availableClaimQty) + '</td>' +
+			'<td>0</td>' +
+			'<td>' + stampFormatNumber(earnPoint) + '</td>' +
+			'<td>' + stampFormatNumber(pointAfter) + '</td>' +
+			'</tr>';
+	});
+
+	$.each(claimMap, function (key, claimRow) {
+		hasRows = true;
+
+		var saveRow = saveMap[key] || {};
+		var balanceBefore = stampCleanNumber(saveRow.balance_before);
+		var earnedPoint = stampCleanNumber(saveRow.earned_point);
+		var availableForClaim = balanceBefore + earnedPoint;
+		var deductPoint = stampCleanNumber(saveRow.claimed_point);
+		var claimQty = stampCleanNumber(saveRow.claim_qty);
+		var pointAfter = stampCleanNumber(saveRow.balance_after);
+
+		tbodyHtml += '<tr class="stamp-point-display-row">' +
+			'<td></td>' +
+			'<td>' + stampEscapeHtml(claimRow.claim_product_name) + '</td>' +
+			'<td>' + stampFormatNumber(availableForClaim) + '</td>' +
+			'<td>' + stampFormatNumber(claimQty) + '</td>' +
+			'<td>' + stampFormatNumber(deductPoint) + '</td>' +
+			'<td>0</td>' +
+			'<td>' + stampFormatNumber(pointAfter) + '</td>' +
+			'</tr>';
+	});
+
+	if (!hasRows) {
+		tbodyHtml = '<tr>' +
+			'<td colspan="7" class="text-center text-muted">No stamp point for this customer or selected products.</td>' +
+			'</tr>';
+	}
+
+	$('#stamp_point_table tbody').html(tbodyHtml);
+
+	calculateStampPointRows(saveMap);
+}
+
+function calculateStampPointRows(saveMap) {
+	var totalEarnPoint = 0;
+	var totalDeductPoint = 0;
+	var totalClaimQty = 0;
+	var totalPointAfterSale = 0;
+	var hiddenHtml = '';
+	var index = 0;
+
+	saveMap = saveMap || {};
+
+	$.each(saveMap, function (key, row) {
+		var productId = row.product_id || '';
+		var claimProductId = row.claim_product_id || '';
+		var saleQty = stampCleanNumber(row.sale_qty);
+		var balanceBefore = stampCleanNumber(row.balance_before);
+		var totalQtyBefore = stampCleanNumber(row.total_qty_before);
+		var totalQtyAfter = stampCleanNumber(row.total_qty_after);
+		var claimedQtyBefore = stampCleanNumber(row.claimed_qty_before);
+		var earnPoint = stampCleanNumber(row.earned_point);
+		var deductPoint = stampCleanNumber(row.claimed_point);
+		var claimQty = stampCleanNumber(row.claim_qty);
+		var balanceAfter = stampCleanNumber(row.balance_after);
+
+		if (saleQty <= 0 && earnPoint <= 0 && deductPoint <= 0 && claimQty <= 0) {
+			return;
+		}
+
+		totalEarnPoint += earnPoint;
+		totalDeductPoint += deductPoint;
+		totalClaimQty += claimQty;
+		totalPointAfterSale += balanceAfter;
+
+		hiddenHtml += '<input type="hidden" name="stamp_claims[' + index + '][product_id]" value="' + stampEscapeHtml(productId) + '">';
+		hiddenHtml += '<input type="hidden" name="stamp_claims[' + index + '][claim_product_id]" value="' + stampEscapeHtml(claimProductId) + '">';
+		hiddenHtml += '<input type="hidden" name="stamp_claims[' + index + '][sale_qty]" value="' + stampEscapeHtml(saleQty) + '">';
+		hiddenHtml += '<input type="hidden" name="stamp_claims[' + index + '][balance_before]" value="' + stampEscapeHtml(balanceBefore) + '">';
+		hiddenHtml += '<input type="hidden" name="stamp_claims[' + index + '][total_qty_before]" value="' + stampEscapeHtml(totalQtyBefore) + '">';
+		hiddenHtml += '<input type="hidden" name="stamp_claims[' + index + '][total_qty_after]" value="' + stampEscapeHtml(totalQtyAfter) + '">';
+		hiddenHtml += '<input type="hidden" name="stamp_claims[' + index + '][claimed_qty_before]" value="' + stampEscapeHtml(claimedQtyBefore) + '">';
+		hiddenHtml += '<input type="hidden" name="stamp_claims[' + index + '][earned_point]" value="' + stampEscapeHtml(earnPoint) + '">';
+		hiddenHtml += '<input type="hidden" name="stamp_claims[' + index + '][claimed_point]" value="' + stampEscapeHtml(deductPoint) + '">';
+		hiddenHtml += '<input type="hidden" name="stamp_claims[' + index + '][claim_qty]" value="' + stampEscapeHtml(claimQty) + '">';
+		hiddenHtml += '<input type="hidden" name="stamp_claims[' + index + '][balance_after]" value="' + stampEscapeHtml(balanceAfter) + '">';
+
+		index++;
+	});
+
+	$('#stamp_claim_inputs_container').html(hiddenHtml);
+
+	$('#stamp_earn_point_this_sale').text(stampFormatNumber(totalEarnPoint));
+	$('#stamp_deduct_point').text(stampFormatNumber(totalDeductPoint));
+	$('#stamp_claim_qty').text(stampFormatNumber(totalClaimQty));
+	$('#stamp_total_point_after_sale').text(stampFormatNumber(totalPointAfterSale));
+
+	$('#stamp_earn_point_this_sale_input').val(totalEarnPoint);
+	$('#stamp_deduct_point_input').val(totalDeductPoint);
+	$('#stamp_claim_qty_input').val(totalClaimQty);
+	$('#stamp_claim_amount').val(totalDeductPoint);
+}
+
+$(document).on('change keyup', 'input[name^="products"][name$="[quantity]"], .pos_quantity', function () {
+	renderStampPointRows();
+});
+
+$(document).on('change change.select2 select2:select', '#customer_id', function () {
+	renderStampPointRows();
+});
+
+$(document).ajaxComplete(function () {
+	setTimeout(function () {
+		renderStampPointRows();
+	}, 300);
+});
+
+$(document).on('click', '.remove_product_row, .remove_row, .remove_sell_entry_row', function () {
+	setTimeout(function () {
+		renderStampPointRows();
+	}, 300);
+});
+
+setTimeout(function () {
+	renderStampPointRows();
+}, 300);
+
+setTimeout(function () {
+	renderStampPointRows();
+}, 1000);
+
     	});
     </script>
 @endsection

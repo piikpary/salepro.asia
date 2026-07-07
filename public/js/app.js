@@ -2203,7 +2203,11 @@ $(document).on('click', '.btn_delete_purchase_type', function(e){
                         document.title = result.print_title;
                     }
 
-                    __print_receipt('receipt_section');
+                    if (result.receipt.rotate_90 == 1) {
+                        __print_receipt_rotate90('receipt_section');
+                    } else {
+                        __print_receipt('receipt_section');
+                    }
 
                     setTimeout(function() {
                         document.title = title;

@@ -1246,6 +1246,7 @@ return [
     'so_invoice_action' => 'Sales Order Invoice Action',
     'so_action_add_sale_invoice' => 'Add Sale Invoice',
     'so_action_add_sale_proforma' => 'Add Sale Proforma',
+    'so_action_off' => 'Off',
     'sales_order' => 'Sales Order',
     'sales_order_help_text' => 'The sales order, sometimes abbreviated as SO, is an order issued by a business or sole trader to a customer. A sales order may be for products and/or services.',
     'add_sales_order' => 'Add Sales Order',

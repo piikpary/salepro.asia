@@ -412,10 +412,103 @@ function incrementImageCounter() {
     img_counter++;
     if ( img_counter === img_len ) {
         window.print();
-        
+
         // setTimeout(function() {
         //     $('#receipt_section').html('');
         // }, 5000);
+    }
+}
+
+function __print_receipt_rotate90(section_id) {
+    var el = document.getElementById(section_id);
+    if (!el) return;
+    __print_receipt_rotate90_el(el);
+}
+
+function __print_receipt_rotate90_el(el) {
+    var isHidden = (window.getComputedStyle(el).display === 'none');
+    var captureTarget = el;
+    var container = null;
+
+    if (isHidden) {
+        // Clone into a properly-sized off-screen div so html2canvas renders it correctly
+        container = document.createElement('div');
+        container.style.cssText = 'position:fixed;left:-9999px;top:0;width:794px;background:#fff;';
+        container.innerHTML = el.innerHTML;
+        document.body.appendChild(container);
+        captureTarget = container;
+    }
+
+    function _cleanup() {
+        if (container && document.body.contains(container)) {
+            document.body.removeChild(container);
+        }
+    }
+
+    function _doCapture() {
+        html2canvas(captureTarget, {
+            scale: 2,
+            useCORS: true,
+            allowTaint: false,
+            backgroundColor: '#ffffff',
+            windowWidth: isHidden ? 794 : window.innerWidth
+        }).then(function(canvas) {
+            _cleanup();
+
+            var W = canvas.width;
+            var H = canvas.height;
+
+            // Rotate 90° CCW: invoice header (top) appears on the LEFT side when printed
+            var rot = document.createElement('canvas');
+            rot.width = H;
+            rot.height = W;
+            var ctx = rot.getContext('2d');
+            ctx.translate(0, W);
+            ctx.rotate(-Math.PI / 2);
+            ctx.drawImage(canvas, 0, 0);
+
+            var dataUrl = rot.toDataURL('image/jpeg', 0.95);
+
+            var old = document.getElementById('__r90_frame');
+            if (old) old.parentNode.removeChild(old);
+
+            var iframe = document.createElement('iframe');
+            iframe.id = '__r90_frame';
+            iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;border:none;';
+            document.body.appendChild(iframe);
+
+            var doc = iframe.contentWindow.document;
+            doc.open();
+            doc.write(
+                '<!DOCTYPE html><html><head>'
+                + '<style>'
+                + '@page{size:landscape;margin:10mm;}'
+                + 'html,body{margin:0;padding:0;width:100%;height:100%;}'
+                + 'img{max-width:100%;max-height:100%;width:auto;height:100%;display:block;}'
+                + '</style>'
+                + '</head><body>'
+                + '<img src="' + dataUrl + '">'
+                + '</body></html>'
+            );
+            doc.close();
+
+            setTimeout(function() {
+                iframe.contentWindow.focus();
+                iframe.contentWindow.print();
+                setTimeout(function() {
+                    if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+                }, 2000);
+            }, 300);
+        }).catch(function() { _cleanup(); });
+    }
+
+    if (typeof html2canvas === 'undefined') {
+        var s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+        s.onload = _doCapture;
+        document.head.appendChild(s);
+    } else {
+        _doCapture();
     }
 }
 

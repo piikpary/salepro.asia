@@ -34,6 +34,7 @@
                     <a href="#" class="list-group-item text-center">@lang('lang_v1.email_settings')</a>
                     <a href="#" class="list-group-item text-center">@lang('lang_v1.sms_settings')</a>
                     <a href="#" class="list-group-item text-center">@lang('lang_v1.reward_point_settings')</a>
+			 <a href="#" class="list-group-item text-center">Stamp Rule Settings</a>
                     <a href="#" class="list-group-item text-center">@lang('lang_v1.modules')</a>
                     <a href="#" class="list-group-item text-center">@lang('lang_v1.custom_labels')</a>
                 </div>
@@ -76,6 +77,8 @@
                 <!-- tab 10 end -->
                 <!-- tab 11 start -->
                 @include('business.partials.settings_reward_point')
+
+		@include('business.partials.stamp_rule_settings')
                 <!-- tab 11 end -->
                 <!-- tab 12 start -->
                 @include('business.partials.settings_modules')
@@ -205,14 +208,135 @@
         });
 
         $('select.custom_labels_products').change(function(){
-            value = $(this).val();
-            textarea = $(this).parents('div.custom_label_product_div').find('div.custom_label_product_dropdown');
-            if(value == 'dropdown'){
+            var value = $(this).val();
+            var textarea = $(this).parents('div.custom_label_product_div').find('div.custom_label_product_dropdown');
+
+            if (value == 'dropdown') {
                 textarea.removeClass('hide');
-            } else{
+            } else {
                 textarea.addClass('hide');
             }
-        })
+        });
+
+        var stampRuleIndex = parseInt($('#stamp_rule_next_index').val() || 1);
+
+        function initStampSelect2(container) {
+            if ($.fn.select2) {
+                container.find('.select2').select2();
+            }
+        }
+
+        function refreshStampProductHidden(group) {
+            var productId = group.find('.stamp-group-product-select').val();
+
+            group.find('.stamp_product_id_hidden').val(productId);
+        }
+
+        function refreshAllStampProductHidden() {
+            $('.stamp-product-group').each(function () {
+                refreshStampProductHidden($(this));
+            });
+        }
+
+        $(document).on('change ifChanged', '#enable_stamp_point', function () {
+            if ($('#enable_stamp_point').is(':checked')) {
+                $('#stamp_rule_setting_area').slideDown(150);
+            } else {
+                $('#stamp_rule_setting_area').slideUp(150);
+            }
+        });
+
+        $(document).on('change', '.stamp-group-product-select', function () {
+            refreshStampProductHidden($(this).closest('.stamp-product-group'));
+        });
+
+        $(document).on('click', '#add_stamp_product_group', function () {
+            var template = $('#stamp_product_group_template').html();
+
+            $('#stamp_rule_group_container').append(template);
+
+            var group = $('#stamp_rule_group_container .stamp-product-group:last');
+
+            group.find('.stamp-group-product-select-template')
+                .removeClass('stamp-group-product-select-template')
+                .addClass('select2 stamp-group-product-select');
+
+            initStampSelect2(group);
+
+            group.find('.add_stamp_tier_row').trigger('click');
+        });
+
+        $(document).on('click', '.add_stamp_tier_row', function () {
+            var group = $(this).closest('.stamp-product-group');
+            var template = $('#stamp_tier_row_template').prop('outerHTML');
+
+            template = template.replace('id="stamp_tier_row_template"', '');
+            template = template.replace(/__INDEX__/g, stampRuleIndex);
+
+            group.find('.stamp-tier-table tbody').append(template);
+
+            var row = group.find('.stamp-tier-table tbody tr:last');
+
+            row.find('.stamp-claim-product-select-template')
+                .removeClass('stamp-claim-product-select-template')
+                .addClass('select2 stamp-claim-product-select');
+
+            initStampSelect2(row);
+
+            refreshStampProductHidden(group);
+
+            stampRuleIndex++;
+            $('#stamp_rule_next_index').val(stampRuleIndex);
+        });
+
+        $(document).on('click', '.remove_stamp_tier_row', function () {
+            var row = $(this).closest('tr');
+            var group = $(this).closest('.stamp-product-group');
+            var ruleId = $(this).data('rule-id');
+
+            if (ruleId) {
+                $('#deleted_stamp_rule_ids_container').append(
+                    '<input type="hidden" name="deleted_stamp_rule_ids[]" value="' + ruleId + '">'
+                );
+            }
+
+            if (group.find('.stamp-tier-table tbody tr').length > 1) {
+                row.remove();
+            } else {
+                row.find('input[type="text"]').val('');
+                row.find('input[type="hidden"][name^="stamp_rule_id"]').val('');
+                row.find('select').val('').trigger('change');
+                row.find('input[type="checkbox"]').prop('checked', true);
+                refreshStampProductHidden(group);
+            }
+        });
+
+        $(document).on('click', '.remove_stamp_product_group', function () {
+            var group = $(this).closest('.stamp-product-group');
+
+            group.find('.remove_stamp_tier_row').each(function () {
+                var ruleId = $(this).data('rule-id');
+
+                if (ruleId) {
+                    $('#deleted_stamp_rule_ids_container').append(
+                        '<input type="hidden" name="deleted_stamp_rule_ids[]" value="' + ruleId + '">'
+                    );
+                }
+            });
+
+            if ($('#stamp_rule_group_container .stamp-product-group').length > 1) {
+                group.remove();
+            } else {
+                group.find('input[type="text"]').val('');
+                group.find('input[type="hidden"][name^="stamp_rule_id"]').val('');
+                group.find('select').val('').trigger('change');
+                group.find('input[type="checkbox"]').prop('checked', true);
+                refreshStampProductHidden(group);
+            }
+        });
+
+        initStampSelect2($(document));
+        refreshAllStampProductHidden();
     });
 </script>
 @endsection

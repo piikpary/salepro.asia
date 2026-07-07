@@ -924,6 +924,20 @@ class ProductUtil extends Util
             return;
         }
 
+        // 🚫 Skip stock cut for 'sell' created from a delivery note
+        // (stock was already deducted when the delivery note status changed to 'delivered')
+        if (isset($transaction->type) && $transaction->type == 'sell'
+            && ! empty($transaction->delivery_note_id)) {
+            return;
+        }
+
+        // 🚫 Skip stock cut for 'sell' created from a sales order
+        // (stock is cut by the auto-created delivery note instead)
+        if (isset($transaction->type) && $transaction->type == 'sell'
+            && ! empty($transaction->sales_order_ids)) {
+            return;
+        }
+
         if ($status_before == 'final' && $transaction->status == 'draft') {
             foreach ($input['products'] as $product) {
                 if (!empty($product['transaction_sell_lines_id'])) {
@@ -1414,11 +1428,11 @@ class ProductUtil extends Util
                 $updated_purchase_line_ids[] = $purchase_line->id;
                 $old_qty = $purchase_line->quantity;
     
-                // [MODIFIED] Only update stock if NOT skipped
-                if (!$skip_stock_update) {
+                // [MODIFIED] Only update stock if NOT skipped and NOT a freight_payment
+                if (!$skip_stock_update && empty($transaction->landed_cost_id) && $transaction->type !== 'freight_payment') {
                     $this->updateProductStock($before_status, $transaction, $data['product_id'], $data['variation_id'], $new_quantity, $purchase_line->quantity, $currency_details);
                 }
-    
+
                 // Handle stock backup for updated lines (edit case)
                 if ($transaction->status == 'received' && $before_status !== null) {
                     $key = $data['product_id'] . '_' . $data['variation_id'];
@@ -1427,12 +1441,12 @@ class ProductUtil extends Util
                         $original_sub_unit_id = $original_purchase_lines[$key]['sub_unit_id'];
                         $original_multiplier = $original_purchase_lines[$key]['base_unit_multiplier'];
                         $original_raw_quantity = $original_quantity / $original_multiplier;
-    
+
                         $new_sub_unit_id = isset($data['sub_unit_id']) ? $data['sub_unit_id'] : null;
                         $unit_changed = $original_sub_unit_id != $new_sub_unit_id;
                         $raw_quantity_changed = $original_raw_quantity != $this->num_uf($data['quantity']);
-    
-                        if (($original_quantity != $new_quantity || $unit_changed || $raw_quantity_changed) && !$skip_stock_update) {
+
+                        if (($original_quantity != $new_quantity || $unit_changed || $raw_quantity_changed) && !$skip_stock_update && empty($transaction->landed_cost_id) && $transaction->type !== 'freight_payment') {
                             $reversal_products[] = $original_purchase_lines[$key];
                             $updated_products[] = $data;
                         }
@@ -1445,8 +1459,8 @@ class ProductUtil extends Util
                 $purchase_line->product_id = $data['product_id'];
                 $purchase_line->variation_id = $data['variation_id'];
     
-                // [MODIFIED] Only increase stock if NOT skipped
-                if ($transaction->status == 'received' && !$skip_stock_update) {
+                // Only increase stock for regular purchases — never for freight_payment type
+                if ($transaction->status == 'received' && !$skip_stock_update && empty($transaction->landed_cost_id) && $transaction->type !== 'freight_payment') {
                     $this->updateProductQuantity($transaction->location_id, $data['product_id'], $data['variation_id'], $new_quantity_f, 0, $currency_details);
                     // Add to new_products for stock backup
                     $new_products[] = $data;
@@ -1581,8 +1595,8 @@ class ProductUtil extends Util
                         }
                     }
 
-                    // Decrease deleted only if previous status was received AND it wasn't a skipped item
-                    if ($before_status == 'received' && $should_decrease) {
+                    // Decrease deleted only if previous status was received AND it wasn't a skipped item AND not a freight_payment
+                    if ($before_status == 'received' && $should_decrease && empty($transaction->landed_cost_id) && $transaction->type !== 'freight_payment') {
                         $this->decreaseProductQuantity(
                             $delete_purchase_line->product_id,
                             $delete_purchase_line->variation_id,
@@ -2216,10 +2230,11 @@ class ProductUtil extends Util
             // DB::raw("(SELECT SUM(quantity) FROM transaction_sell_lines LEFT JOIN transactions ON transaction_sell_lines.transaction_id=transactions.id WHERE transactions.status='final' $location_filter AND
             //     transaction_sell_lines.product_id=products.id) as total_sold"),
 
-            DB::raw("(SELECT SUM(TSL.quantity - TSL.quantity_returned) FROM transactions 
+            DB::raw("(SELECT SUM(TSL.quantity) FROM transactions
                   JOIN transaction_sell_lines AS TSL ON transactions.id=TSL.transaction_id
-                  WHERE transactions.status='final' AND transactions.type='sell' AND transactions.location_id=vld.location_id
-                  AND TSL.variation_id=variations.id) as total_sold"),
+                  WHERE transactions.type='delivery_note' AND transactions.status IN ('delivered','completed')
+                  AND transactions.location_id=vld.location_id AND transactions.deleted_at IS NULL
+                  AND TSL.variation_id=variations.id AND TSL.parent_sell_line_id IS NULL) as total_sold"),
             DB::raw("(SELECT SUM(IF(transactions.type='sell_transfer', TSL.quantity, 0) ) FROM transactions 
                   JOIN transaction_sell_lines AS TSL ON transactions.id=TSL.transaction_id
                   WHERE transactions.status='final' AND transactions.type='sell_transfer' AND transactions.location_id=vld.location_id AND (TSL.variation_id=variations.id)) as total_transfered"),
@@ -2329,7 +2344,8 @@ public function getVariationStockDetails($business_id, $variation_id, $location_
         return ['variation'=>'','unit'=>'','second_unit'=>'','total_purchase'=>0,'total_purchase_return'=>0,
             'total_adjusted'=>0,'total_opening_stock'=>0,'total_purchase_transfer'=>0,'total_sold'=>0,
             'total_sell_return'=>0,'total_sell_transfer'=>0,'total_rewards_in'=>0,'total_rewards_out'=>0,
-            'supplier_reward_exchange'=>0,'supplier_reward_exchange_receive'=>0,'current_stock'=>0];
+            'supplier_reward_exchange'=>0,'supplier_reward_exchange_receive'=>0,'total_delivery_return'=>0,
+            'total_manufactured'=>0,'total_ingredient_used'=>0,'current_stock'=>0];
     }
 
     $purchase_agg = DB::table('purchase_lines as pl')
@@ -2345,15 +2361,64 @@ public function getVariationStockDetails($business_id, $variation_id, $location_
             DB::raw("COALESCE(SUM(CASE WHEN t.type='purchase_transfer' AND t.status='received' THEN pl.quantity ELSE 0 END),0) as total_purchase_transfer")
         )->first();
 
+    // Stock is cut ONLY by Delivery Note — sell transactions never cut physical stock.
+    // sell_agg is kept only for sell_transfer and production_sell (ingredient used).
     $sell_agg = DB::table('transaction_sell_lines as sl')
         ->join('transactions as t', function($j) use($location_id) {
-            $j->on('sl.transaction_id','=','t.id')->where('t.location_id',$location_id)->where('t.status','final')->whereNull('t.deleted_at');
-        })->where('sl.variation_id',$variation_id)
+            $j->on('sl.transaction_id','=','t.id')
+              ->where('t.location_id', $location_id)
+              ->where('t.status', 'final')
+              ->whereNull('t.deleted_at');
+        })->where('sl.variation_id', $variation_id)
         ->select(
-            DB::raw("COALESCE(SUM(CASE WHEN t.type='sell' THEN sl.quantity ELSE 0 END),0) as total_sold"),
-            DB::raw("COALESCE(SUM(CASE WHEN t.type='sell' THEN sl.quantity_returned ELSE 0 END),0) as total_sell_return"),
-            DB::raw("COALESCE(SUM(CASE WHEN t.type='sell_transfer' THEN sl.quantity ELSE 0 END),0) as total_sell_transfer")
+            DB::raw("0 as total_sold"),
+            DB::raw("0 as total_sell_return"),
+            DB::raw("COALESCE(SUM(CASE WHEN t.type='sell_transfer' THEN sl.quantity ELSE 0 END),0) as total_sell_transfer"),
+            DB::raw("COALESCE(SUM(CASE WHEN t.type='production_sell' THEN sl.quantity ELSE 0 END),0) as total_ingredient_used")
         )->first();
+
+    // Delivery Note: total qty delivered (status delivered/completed = stock deducted)
+    $dn_qty = (float) DB::table('transaction_sell_lines as sl')
+        ->join('transactions as t', function($j) use($location_id) {
+            $j->on('sl.transaction_id','=','t.id')
+              ->where('t.location_id', $location_id)
+              ->whereIn('t.status', ['delivered','completed'])
+              ->where('t.type', 'delivery_note')
+              ->whereNull('t.deleted_at');
+        })->where('sl.variation_id', $variation_id)
+        ->sum('sl.quantity');
+
+    // Old sells (before first DN at this location) cut stock under the old system — include them.
+    $first_dn_date = DB::table('transactions')
+        ->where('type', 'delivery_note')
+        ->where('location_id', $location_id)
+        ->whereNull('deleted_at')
+        ->min('transaction_date') ?? '9999-12-31 23:59:59';
+
+    $old_sell_qty = (float) DB::table('transaction_sell_lines as sl')
+        ->join('transactions as t', function($j) use($location_id) {
+            $j->on('sl.transaction_id','=','t.id')
+              ->where('t.location_id', $location_id)
+              ->where('t.type', 'sell')
+              ->where('t.status', 'final')
+              ->whereNull('t.deleted_at');
+        })
+        ->where('sl.variation_id', $variation_id)
+        ->whereNull('sl.parent_sell_line_id')
+        ->where('sl.quantity', '>', 0)
+        ->where('t.transaction_date', '<', $first_dn_date)
+        ->sum('sl.quantity');
+
+    // Delivery Return: total stock restored (return_qty + good_stock + damaged = quantity)
+    $dr_qty = (float) DB::table('transaction_sell_lines as sl')
+        ->join('transactions as t', function($j) use($location_id) {
+            $j->on('sl.transaction_id','=','t.id')
+              ->where('t.location_id', $location_id)
+              ->where('t.status', 'completed')
+              ->where('t.type', 'delivery_return')
+              ->whereNull('t.deleted_at');
+        })->where('sl.variation_id', $variation_id)
+        ->sum('sl.quantity');
 
     $adj_agg = DB::table('stock_adjustment_lines as al')
         ->join('transactions as t', function($j) use($location_id) {
@@ -2363,17 +2428,22 @@ public function getVariationStockDetails($business_id, $variation_id, $location_
 
     $total_adjusted = max((float)($purchase_agg->total_adjusted??0),(float)($adj_agg->total_adjusted??0));
 
-    $reward_exchanges = DB::table('stock_reward_exchange_new as sre')
+    // production_purchase: query by product_id (via variations join) to handle any variation the manufacturing module uses
+    $total_manufactured = (float) DB::table('purchase_lines as pl')
         ->join('transactions as t', function($j) use($location_id) {
-            $j->on('t.id','=','sre.transaction_id')->where('t.location_id',$location_id)->where('t.status','completed')
-              ->where('t.type','reward_exchange')->whereNull('t.deleted_at')->whereNull('t.deleted_by');
-        })->where('sre.variation_id',$variation_id)
-        ->whereIn('sre.type',['reward_exchange_out','reward_exchange_in','edit_reward_exchange_out','edit_reward_exchange_in'])
-        ->select('sre.transaction_id',DB::raw('SUM(sre.quantity) as net_quantity'))
-        ->groupBy('sre.transaction_id')->get();
+            $j->on('pl.transaction_id','=','t.id')
+              ->where('t.location_id', $location_id)
+              ->where('t.type', 'production_purchase')
+              ->where('t.status', 'received')
+              ->whereNull('t.deleted_at');
+        })
+        ->join('variations as v', 'pl.variation_id', '=', 'v.id')
+        ->where('v.product_id', $variation_info->product_id)
+        ->sum('pl.quantity');
 
-    $total_rewards_in=0; $total_rewards_out=0;
-    foreach($reward_exchanges as $r){ $n=(float)$r->net_quantity; if($n>0)$total_rewards_in+=$n; elseif($n<0)$total_rewards_out+=abs($n); }
+    // Reward exchange does not cut physical stock (only affects ring balance) — excluded from stock calculation
+    $total_rewards_in  = 0;
+    $total_rewards_out = 0;
 
     $supplier_reward_exchange = (float)DB::table('stock_reward_exchange_new as sre')
         ->join('transactions as t', function($j) use($location_id) {
@@ -2391,19 +2461,30 @@ public function getVariationStockDetails($business_id, $variation_id, $location_
         ? $variation_info->product.' - '.$variation_info->product_variation.' - '.$variation_info->variation_name.' ('.$variation_info->sub_sku.')'
         : $variation_info->product.' ('.$variation_info->sku.')';
 
+    $total_ingredient_used = (float)($sell_agg->total_ingredient_used ?? 0);
+
+    $total_sold_qty = $dn_qty + $old_sell_qty;
+
     $current_stock_qty = ($purchase_agg->total_opening_stock??0)+($purchase_agg->total_purchase??0)+($purchase_agg->total_purchase_transfer??0)
-        +($sell_agg->total_sell_return??0)+$total_rewards_in-($sell_agg->total_sold??0)-($sell_agg->total_sell_transfer??0)
-        -($purchase_agg->total_purchase_return??0)-$total_adjusted-$total_rewards_out+$supplier_reward_exchange+$supplier_reward_exchange_receive;
+        +$dr_qty
+        -$total_sold_qty-($sell_agg->total_sell_transfer??0)
+        -($purchase_agg->total_purchase_return??0)-$total_adjusted
+        +$supplier_reward_exchange+$supplier_reward_exchange_receive
+        +$total_manufactured-$total_ingredient_used;
 
     return [
         'variation'=>$product_name,'unit'=>$variation_info->unit,'second_unit'=>$variation_info->second_unit,
         'total_purchase'=>$purchase_agg->total_purchase??0,'total_purchase_return'=>$purchase_agg->total_purchase_return??0,
         'total_adjusted'=>$total_adjusted,'total_opening_stock'=>$purchase_agg->total_opening_stock??0,
         'total_purchase_transfer'=>$purchase_agg->total_purchase_transfer??0,
-        'total_sold'=>$sell_agg->total_sold??0,'total_sell_return'=>$sell_agg->total_sell_return??0,
+        'total_sold'=>$total_sold_qty,
+        'total_sell_return'=>0,
         'total_sell_transfer'=>$sell_agg->total_sell_transfer??0,
         'total_rewards_in'=>$total_rewards_in,'total_rewards_out'=>$total_rewards_out,
         'supplier_reward_exchange'=>$supplier_reward_exchange,'supplier_reward_exchange_receive'=>$supplier_reward_exchange_receive,
+        'total_delivery_return'=>$dr_qty,
+        'total_manufactured'=>$total_manufactured,
+        'total_ingredient_used'=>$total_ingredient_used,
         'current_stock'=>$current_stock_qty,
     ];
 }
@@ -2425,8 +2506,8 @@ public function getVariationStockHistory(
     $current_stock = null,
     $page = 1,
     $per_page = 25,
-    $cached_total = null,      // NEW: skip COUNT if provided
-    $page_start_stock = null   // NEW: skip sum_newer if provided
+    $cached_total = null,
+    $page_start_stock = null
 ) {
     $vid = (int) $variation_id;
     $lid = (int) $location_id;
@@ -2456,27 +2537,33 @@ public function getVariationStockHistory(
         LIMIT {$limit} OFFSET {$offset}
     ");
 
-    // ── Running stock: use cached value or calculate ─────────────────────
+    // ── Running stock ────────────────────────────────────────────────────
+    // Use SUM of ALL history movements as the base (self-consistent).
+    // This correctly handles old sells (before DN) + new DNs without
+    // relying on qty_available, which may differ from history total.
     if ($page_start_stock !== null) {
         $running_stock = (float) $page_start_stock;
-    } elseif ($current_stock !== null && $offset > 0) {
-        // Only needed for page 1 fallback — sum newer rows
-        $sum_result = DB::select("
-            SELECT COALESCE(SUM(quantity_change),0) as s FROM (
-                SELECT quantity_change FROM ({$union_sql}) as su
-                ORDER BY transaction_date DESC, transaction_id DESC LIMIT {$offset}
-            ) as nr
-        ");
-        $running_stock = (float)$current_stock - (float)($sum_result[0]->s ?? 0);
     } else {
-        $running_stock = (float)($current_stock ?? 0);
+        $history_total_result = DB::select("SELECT COALESCE(SUM(quantity_change),0) as s FROM ({$union_sql}) as su");
+        $history_total = (float)($history_total_result[0]->s ?? 0);
+        if ($offset > 0) {
+            $newer_result = DB::select("
+                SELECT COALESCE(SUM(quantity_change),0) as s FROM (
+                    SELECT quantity_change FROM ({$union_sql}) as su
+                    ORDER BY transaction_date DESC, transaction_id DESC LIMIT {$offset}
+                ) as nr
+            ");
+            $running_stock = $history_total - (float)($newer_result[0]->s ?? 0);
+        } else {
+            $running_stock = $history_total;
+        }
     }
 
     // ── Build result array ───────────────────────────────────────────────
     $result = [];
     foreach ($rows as $row) {
         $qty = (float) $row->quantity_change;
-        $ref_no = in_array($row->transaction_type, ['sell','sell_return','sell_transfer','production_sell'])
+        $ref_no = in_array($row->transaction_type, ['sell','sell_return','sell_transfer','production_sell','delivery_note','delivery_return'])
             ? $row->invoice_no : $row->ref_no;
         $sec = (float)($row->sec_unit_qty ?? 0);
 
@@ -2509,26 +2596,45 @@ public function getVariationStockHistory(
 
 /**
  * Build the raw UNION ALL SQL (reusable, no bindings issues)
+ *
+ * Cutoff date = first delivery_note date for this location.
+ * BEFORE cutoff: sells show (old system — sell cut stock directly).
+ * FROM cutoff onwards: only delivery_notes show (new system — DN cuts stock).
+ * COALESCE to '9999-12-31' means all sells show when no DN exists yet for this location.
  */
 private function buildStockHistoryUnionSql($vid, $lid)
 {
-    $sells = "SELECT t.id as transaction_id,t.type as transaction_type,t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name as contact_name,c.supplier_business_name,(-1*sl.quantity) as quantity_change,sl.secondary_unit_quantity as sec_unit_qty,'sell_side' as source_type FROM transaction_sell_lines sl INNER JOIN transactions t ON sl.transaction_id=t.id AND t.location_id={$lid} AND t.status='final' AND t.type IN('sell','sell_transfer','production_sell') AND t.deleted_at IS NULL AND t.deleted_by IS NULL LEFT JOIN contacts c ON t.contact_id=c.id WHERE sl.variation_id={$vid}";
+    // Cutoff = date of first delivery_note ever created for this location
+    $cutoff = "(SELECT COALESCE(MIN(transaction_date),'9999-12-31 23:59:59') FROM transactions WHERE type='delivery_note' AND location_id={$lid} AND deleted_at IS NULL)";
 
-    $sell_returns = "SELECT rt.id,rt.type,rt.transaction_date,rt.status,rt.invoice_no,rt.ref_no,rt.additional_notes,c.name,c.supplier_business_name,rsl.quantity_returned,0,'sell_return' FROM transaction_sell_lines rsl INNER JOIN transactions rt ON rsl.transaction_id=rt.id AND rt.location_id={$lid} AND rt.type='sell_return' AND rt.deleted_at IS NULL AND rt.deleted_by IS NULL LEFT JOIN contacts c ON rt.contact_id=c.id WHERE rsl.variation_id={$vid} AND rsl.quantity_returned>0";
+    // Old Sells (stock out) — only shown BEFORE the first DN date (old system cut stock via sell)
+    $sells = "SELECT t.id as transaction_id,'sell' as transaction_type,t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name as contact_name,c.supplier_business_name,(-1*sl.quantity) as quantity_change,0 as sec_unit_qty,'sell_side' as source_type FROM transaction_sell_lines sl INNER JOIN transactions t ON sl.transaction_id=t.id AND t.location_id={$lid} AND t.type='sell' AND t.status='final' AND t.deleted_at IS NULL LEFT JOIN contacts c ON t.contact_id=c.id WHERE sl.variation_id={$vid} AND sl.quantity>0 AND sl.parent_sell_line_id IS NULL AND t.transaction_date<{$cutoff}";
+    // Old Sell Returns — only shown BEFORE the first DN date
+    $sell_returns = "SELECT t.id,'sell_return',t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name,c.supplier_business_name,sl.quantity_returned,0,'sell_return_side' FROM transaction_sell_lines sl INNER JOIN transactions t ON sl.transaction_id=t.id AND t.location_id={$lid} AND t.type='sell' AND t.status='final' AND t.deleted_at IS NULL LEFT JOIN contacts c ON t.contact_id=c.id WHERE sl.variation_id={$vid} AND sl.quantity_returned>0 AND sl.parent_sell_line_id IS NULL AND t.transaction_date<{$cutoff}";
 
-    $purchases = "SELECT t.id,t.type,t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name,c.supplier_business_name,pl.quantity,pl.secondary_unit_quantity,'purchase_side' FROM purchase_lines pl INNER JOIN transactions t ON pl.transaction_id=t.id AND t.location_id={$lid} AND t.deleted_at IS NULL AND t.deleted_by IS NULL LEFT JOIN purchase_types pt ON pl.purchase_type_id=pt.id LEFT JOIN contacts c ON t.contact_id=c.id WHERE pl.variation_id={$vid} AND (t.type IN('opening_stock','purchase_transfer','production_purchase') OR (t.type='purchase' AND t.status='received' AND (pt.exchange_product_id IS NULL OR JSON_CONTAINS(pt.exchange_product_id,'null'))))";
+    // Delivery Note: stock out (negative) — new structure replacing sell
+    $delivery_notes = "SELECT t.id as transaction_id,'delivery_note' as transaction_type,t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name as contact_name,c.supplier_business_name,(-1*sl.quantity) as quantity_change,0 as sec_unit_qty,'delivery_note_side' as source_type FROM transaction_sell_lines sl INNER JOIN transactions t ON sl.transaction_id=t.id AND t.location_id={$lid} AND t.status IN('delivered','completed') AND t.type='delivery_note' AND t.deleted_at IS NULL LEFT JOIN contacts c ON t.contact_id=c.id WHERE sl.variation_id={$vid}";
+
+    // Delivery Return: stock restored (only return_qty affects stock now)
+    $delivery_returns = "SELECT t.id,'delivery_return',t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name,c.supplier_business_name,sl.quantity,0,'delivery_return_side' FROM transaction_sell_lines sl INNER JOIN transactions t ON sl.transaction_id=t.id AND t.location_id={$lid} AND t.status='completed' AND t.type='delivery_return' AND t.deleted_at IS NULL LEFT JOIN contacts c ON t.contact_id=c.id WHERE sl.variation_id={$vid} AND sl.quantity>0";
+
+    $purchases = "SELECT t.id,t.type,t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name,c.supplier_business_name,pl.quantity,pl.secondary_unit_quantity,'purchase_side' FROM purchase_lines pl INNER JOIN transactions t ON pl.transaction_id=t.id AND t.location_id={$lid} AND t.deleted_at IS NULL AND t.deleted_by IS NULL LEFT JOIN purchase_types pt ON pl.purchase_type_id=pt.id LEFT JOIN contacts c ON t.contact_id=c.id WHERE pl.variation_id={$vid} AND (t.type IN('opening_stock','purchase_transfer') OR (t.type='purchase' AND t.status='received' AND (pt.exchange_product_id IS NULL OR JSON_CONTAINS(pt.exchange_product_id,'null'))))";
+
+    // production_purchase: match by product_id (via variations join) so any variation the manufacturing module creates is found
+    $production_purchases = "SELECT t.id,'production_purchase' as transaction_type,t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name as contact_name,c.supplier_business_name,pl.quantity as quantity_change,pl.secondary_unit_quantity as sec_unit_qty,'purchase_side' as source_type FROM purchase_lines pl INNER JOIN transactions t ON pl.transaction_id=t.id AND t.location_id={$lid} AND t.type='production_purchase' AND t.status='received' AND t.deleted_at IS NULL AND t.deleted_by IS NULL INNER JOIN variations v ON pl.variation_id=v.id LEFT JOIN contacts c ON t.contact_id=c.id WHERE v.product_id=(SELECT product_id FROM variations WHERE id={$vid} LIMIT 1)";
 
     $purchase_returns = "SELECT t.id,t.type,t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name,c.supplier_business_name,(-1*pl.quantity_returned),0,'purchase_return' FROM purchase_lines pl INNER JOIN transactions t ON pl.transaction_id=t.id AND t.location_id={$lid} AND t.type='purchase_return' AND t.deleted_at IS NULL AND t.deleted_by IS NULL LEFT JOIN contacts c ON t.contact_id=c.id WHERE pl.variation_id={$vid} AND pl.quantity_returned>0";
 
     $adjustments = "SELECT t.id,t.type,t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name,c.supplier_business_name,(-1*al.quantity),0,'adjustment' FROM stock_adjustment_lines al INNER JOIN transactions t ON al.transaction_id=t.id AND t.location_id={$lid} AND t.type='stock_adjustment' AND t.deleted_at IS NULL AND t.deleted_by IS NULL LEFT JOIN contacts c ON t.contact_id=c.id WHERE al.variation_id={$vid}";
 
-    $rewards = "SELECT t.id,'reward_exchange',t.transaction_date,t.status,t.invoice_no,t.reward_no,t.additional_notes,c.name,c.supplier_business_name,SUM(sre.quantity),0,'reward' FROM stock_reward_exchange_new sre INNER JOIN transactions t ON t.id=sre.transaction_id AND t.location_id={$lid} AND t.status='completed' AND t.type='reward_exchange' AND t.deleted_at IS NULL AND t.deleted_by IS NULL LEFT JOIN contacts c ON t.contact_id=c.id WHERE sre.variation_id={$vid} AND sre.type IN('reward_exchange_out','reward_exchange_in','edit_reward_exchange_out','edit_reward_exchange_in') GROUP BY t.id,t.transaction_date,t.status,t.invoice_no,t.reward_no,t.additional_notes,c.name,c.supplier_business_name HAVING SUM(sre.quantity)!=0";
-
     $supplier_send = "SELECT t.id,'supplier_exchange',t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name,c.supplier_business_name,sre.quantity,0,'supplier_send' FROM stock_reward_exchange_new sre INNER JOIN transactions t ON t.id=sre.transaction_id AND t.location_id={$lid} AND t.sub_type='send' AND t.type='supplier_exchange' AND t.deleted_at IS NULL AND t.deleted_by IS NULL LEFT JOIN contacts c ON t.contact_id=c.id WHERE sre.variation_id={$vid} AND sre.type='supplier_reward_out' AND sre.contact_id IS NULL";
 
     $supplier_receive = "SELECT t.id,'supplier_exchange_receive',t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name,c.supplier_business_name,sre.quantity,0,'supplier_receive' FROM stock_reward_exchange_new sre INNER JOIN transactions t ON t.id=sre.transaction_id AND t.location_id={$lid} AND t.type='supplier_exchange_receive' AND t.deleted_at IS NULL AND t.deleted_by IS NULL LEFT JOIN contacts c ON t.contact_id=c.id WHERE sre.variation_id={$vid} AND sre.type='supplier_receive_in' AND sre.contact_id IS NULL";
 
-    return "{$sells} UNION ALL {$sell_returns} UNION ALL {$purchases} UNION ALL {$purchase_returns} UNION ALL {$adjustments} UNION ALL {$rewards} UNION ALL {$supplier_send} UNION ALL {$supplier_receive}";
+    // Production sell: ingredient consumed (stock out, negative)
+    $production_sells = "SELECT t.id as transaction_id,'production_sell' as transaction_type,t.transaction_date,t.status,t.invoice_no,t.ref_no,t.additional_notes,c.name as contact_name,c.supplier_business_name,(-1*sl.quantity) as quantity_change,0 as sec_unit_qty,'production_sell_side' as source_type FROM transaction_sell_lines sl INNER JOIN transactions t ON sl.transaction_id=t.id AND t.location_id={$lid} AND t.type='production_sell' AND t.status='final' AND t.deleted_at IS NULL LEFT JOIN contacts c ON t.contact_id=c.id WHERE sl.variation_id={$vid} AND sl.quantity>0 AND sl.parent_sell_line_id IS NULL";
+
+    return "{$sells} UNION ALL {$sell_returns} UNION ALL {$delivery_notes} UNION ALL {$delivery_returns} UNION ALL {$purchases} UNION ALL {$production_purchases} UNION ALL {$purchase_returns} UNION ALL {$adjustments} UNION ALL {$supplier_send} UNION ALL {$supplier_receive} UNION ALL {$production_sells}";
 }
 
 
@@ -2538,14 +2644,16 @@ private function buildStockHistoryUnionSql($vid, $lid)
 private function getStockHistoryTypeLabel($transaction_type, $source_type, $qty_change)
 {
     switch ($transaction_type) {
+        case 'delivery_note': return 'Delivery Note';
+        case 'delivery_return': return 'Delivery Return';
         case 'sell': return __('sale.sale');
         case 'sell_transfer': return __('lang_v1.stock_transfers').' ('.__('lang_v1.out').')';
-        case 'production_sell': return __('manufacturing::lang.ingredient');
+        case 'production_sell': return 'Ingredient';
         case 'sell_return': return __('lang_v1.sell_return');
         case 'purchase': return __('lang_v1.purchase');
         case 'opening_stock': return __('report.opening_stock');
         case 'purchase_transfer': return __('lang_v1.stock_transfers').' ('.__('lang_v1.in').')';
-        case 'production_purchase': return __('manufacturing::lang.manufactured');
+        case 'production_purchase': return 'Manufactured';
         case 'purchase_return': return __('lang_v1.purchase_return');
         case 'stock_adjustment': return __('stock_adjustment.stock_adjustment');
         case 'reward_exchange': return $qty_change > 0 ? __('Stock Reward In') : __('Stock Reward Out');

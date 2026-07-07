@@ -45,6 +45,7 @@ use App\Http\Controllers\NotificationTemplateController;
 use App\Http\Controllers\OpeningStockController;
 use App\Http\Controllers\PrinterController;
 use App\Http\Controllers\ProductController;
+use App\Http\Controllers\AppSettingController;
 use App\Http\Controllers\ProductSaleVisitController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseOrderController;
@@ -289,6 +290,7 @@ Route::middleware(['setData', 'auth', 'SetSessionData', 'language', 'timezone', 
     Route::post('/sells/pos/get_customer_group_price', [SellPosController::class, 'getCustomerGroupPrice'])->name('sells.pos.get_customer_group_price');
     
     Route::resource('pos', SellPosController::class);
+    Route::post('/pos/save-delivery-default', [SellPosController::class, 'saveDeliveryDefault'])->name('pos.save_delivery_default');
 
     Route::resource('roles', RoleController::class);
 
@@ -814,6 +816,24 @@ Route::get('sells/cache-stats', [SellController::class, 'getCacheStats'])->name(
     Route::get('sale-reward-supplier-receive/{id}/status', [SalesOrderRewardSupllierReceiveController::class, 'status'])->name('sale-reward-supplier-receive.status');
     Route::put('sale-reward-supplier-receive/{id}/update-status', [SalesOrderRewardSupllierReceiveController::class, 'update_status'])->name('sale-reward-supplier-receive.update_status');
 
+    // App Settings (mobile app configuration)
+    Route::get('app-settings', [AppSettingController::class, 'index'])->name('app-settings.index');
+    Route::post('app-settings/save-global', [AppSettingController::class, 'saveGlobalSettings'])->name('app-settings.save_global');
+    Route::get('app-settings/products', [AppSettingController::class, 'getProducts'])->name('app-settings.products');
+    Route::get('app-settings/categories', [AppSettingController::class, 'getCategories'])->name('app-settings.categories');
+    Route::post('app-settings/categories', [AppSettingController::class, 'createCategory'])->name('app-settings.create_category');
+    Route::put('app-settings/categories/{id}', [AppSettingController::class, 'updateCategory'])->name('app-settings.update_category');
+    Route::delete('app-settings/categories/{id}', [AppSettingController::class, 'deleteCategory'])->name('app-settings.delete_category');
+    Route::post('app-settings/assign-category', [AppSettingController::class, 'assignCategory'])->name('app-settings.assign_category');
+    Route::post('app-settings/remove-from-category', [AppSettingController::class, 'removeFromCategory'])->name('app-settings.remove_from_category');
+    Route::post('app-settings/preview-sort', [AppSettingController::class, 'previewSortOrder'])->name('app-settings.preview_sort');
+    // User Product Visibility
+    Route::get('app-settings/user-products', [AppSettingController::class, 'getUserProducts'])->name('app-settings.user_products');
+    Route::get('app-settings/users', [AppSettingController::class, 'getUsers'])->name('app-settings.users');
+    Route::post('app-settings/assign-user', [AppSettingController::class, 'assignToUser'])->name('app-settings.assign_user');
+    Route::post('app-settings/remove-from-user', [AppSettingController::class, 'removeFromUser'])->name('app-settings.remove_from_user');
+    Route::get('app-settings/check-user-assignments', [AppSettingController::class, 'checkUserAssignments'])->name('app-settings.check_user_assignments');
+
     Route::get('product_sale_visit', [ProductSaleVisitController::class, 'index'])->name('product_sale_visit.index');
     Route::post('product_sale_visit/update', [ProductSaleVisitController::class, 'updateSaleVisit'])->name('product_sale_visit.update');
     Route::get('product_sale_visit/own-products', [ProductSaleVisitController::class, 'getOwnProducts'])->name('product_sale_visit.own_products');
@@ -865,6 +885,34 @@ Route::get('sells/cache-stats', [SellController::class, 'getCacheStats'])->name(
     Route::get('get-sales-order-lines', [SellPosController::class, 'getSalesOrderLines']);
     Route::get('edit-sales-orders/{id}/status', [SalesOrderController::class, 'getEditSalesOrderStatus']);
     Route::put('update-sales-orders/{id}/status', [SalesOrderController::class, 'postEditSalesOrderStatus']);
+    
+    // Delivery Note
+    Route::get('delivery-note', [\App\Http\Controllers\DeliveryNoteController::class, 'index'])->name('delivery-note.index');
+    Route::get('delivery-note/create', [\App\Http\Controllers\DeliveryNoteController::class, 'create'])->name('delivery-note.create');
+    Route::get('delivery-note/check-no', [\App\Http\Controllers\DeliveryNoteController::class, 'checkInvoiceNo'])->name('delivery-note.checkNo');
+    Route::post('delivery-note', [\App\Http\Controllers\DeliveryNoteController::class, 'store'])->name('delivery-note.store');
+    Route::get('delivery-note/{id}/edit', [\App\Http\Controllers\DeliveryNoteController::class, 'edit'])->name('delivery-note.edit');
+    Route::put('delivery-note/{id}', [\App\Http\Controllers\DeliveryNoteController::class, 'update'])->name('delivery-note.update');
+    Route::get('delivery-note/{id}/view', [\App\Http\Controllers\DeliveryNoteController::class, 'show'])->name('delivery-note.show');
+    Route::get('delivery-note/{id}/print', [\App\Http\Controllers\DeliveryNoteController::class, 'printNote'])->name('delivery-note.print');
+    Route::get('delivery-note/{id}/get-receipt', [\App\Http\Controllers\DeliveryNoteController::class, 'getReceipt'])->name('delivery-note.getReceipt');
+    Route::delete('delivery-note/{id}', [\App\Http\Controllers\DeliveryNoteController::class, 'destroy'])->name('delivery-note.destroy');
+    Route::get('get-sales-order-for-dn/{id}', [\App\Http\Controllers\DeliveryNoteController::class, 'getSalesOrderLines']);
+    Route::get('delivery-note-from-so/{so_id}', [\App\Http\Controllers\DeliveryNoteController::class, 'createFromSalesOrder'])->name('delivery-note.createFromSalesOrder');
+    Route::get('/sell/create-from-delivery-note/{id}', [SellController::class, 'createFromDeliveryNote'])->name('sell.createFromDeliveryNote');
+
+    // Delivery Return
+    Route::get('delivery-return', [\App\Http\Controllers\DeliveryReturnController::class, 'index'])->name('delivery-return.index');
+    Route::get('delivery-return/create', [\App\Http\Controllers\DeliveryReturnController::class, 'create'])->name('delivery-return.create');
+    Route::get('delivery-return/create-from-dn/{dn_id}', [\App\Http\Controllers\DeliveryReturnController::class, 'createFromDN'])->name('delivery-return.createFromDN');
+    Route::post('delivery-return', [\App\Http\Controllers\DeliveryReturnController::class, 'store'])->name('delivery-return.store');
+    Route::get('delivery-return/{id}/edit', [\App\Http\Controllers\DeliveryReturnController::class, 'edit'])->name('delivery-return.edit');
+    Route::put('delivery-return/{id}', [\App\Http\Controllers\DeliveryReturnController::class, 'update'])->name('delivery-return.update');
+    Route::get('delivery-return/{id}/view', [\App\Http\Controllers\DeliveryReturnController::class, 'show'])->name('delivery-return.show');
+    Route::get('delivery-return/{id}/print', [\App\Http\Controllers\DeliveryReturnController::class, 'printReturn'])->name('delivery-return.print');
+    Route::get('delivery-return/{id}/get-receipt', [\App\Http\Controllers\DeliveryReturnController::class, 'getReceipt'])->name('delivery-return.getReceipt');
+    Route::delete('delivery-return/{id}', [\App\Http\Controllers\DeliveryReturnController::class, 'destroy'])->name('delivery-return.destroy');
+    Route::get('check-delivery-note-no', [\App\Http\Controllers\DeliveryReturnController::class, 'checkDeliveryNote']);
     Route::get('reports/activity-log', [ReportController::class, 'activityLog']);
     Route::get('user-location/{latlng}', [HomeController::class, 'getUserLocation']);
 

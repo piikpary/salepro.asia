@@ -327,29 +327,29 @@ class ProductController extends Controller
                         return $product;
                     })
                     ->editColumn('image', function ($row) use ($business_id) {
-    if ($row->img_path_define == 1) {
-        return '<div style="display: flex;"><img src="'.urldecode($row->image_url).'" alt="Product image" class="product-thumbnail-small"></div>';
-    } else {
-        $base_url = "https://piik-data.sgp1.digitaloceanspaces.com/piik-data/salepro/public/image/";
-        
-        $s3image = $base_url . $business_id . '/' . $row->image;
-        
-        // If this business was cloned from another, fallback to source business images
-        $cloned_from = [
-            43 => 53,  // business 43 was cloned from business 53
-            // add more here if needed: 50 => 53, etc.
-        ];
-        
-        if (isset($cloned_from[$business_id])) {
-            $s3image_fallback = $base_url . $cloned_from[$business_id] . '/' . $row->image;
-            return '<div style="display: flex;"><img src="'.$s3image.'" 
-                        onerror="this.onerror=null; this.src=\''.addslashes($s3image_fallback).'\'" 
-                        alt="Product image" class="product-thumbnail-small"></div>';
-        }
-        
-        return '<div style="display: flex;"><img src="'.$s3image.'" alt="Product image" class="product-thumbnail-small"></div>';
-    }
-})
+                        if ($row->img_path_define == 1) {
+                            return '<div style="display: flex;"><img src="'.urldecode($row->image_url).'" alt="Product image" class="product-thumbnail-small"></div>';
+                        } else {
+                            $base_url = "https://piik-data.sgp1.digitaloceanspaces.com/piik-data/salepro/public/image/";
+                            
+                            $s3image = $base_url . $business_id . '/' . $row->image;
+                            
+                            // If this business was cloned from another, fallback to source business images
+                            $cloned_from = [
+                                43 => 53,  // business 43 was cloned from business 53
+                                // add more here if needed: 50 => 53, etc.
+                            ];
+                            
+                            if (isset($cloned_from[$business_id])) {
+                                $s3image_fallback = $base_url . $cloned_from[$business_id] . '/' . $row->image;
+                                return '<div style="display: flex;"><img src="'.$s3image.'" 
+                                            onerror="this.onerror=null; this.src=\''.addslashes($s3image_fallback).'\'" 
+                                            alt="Product image" class="product-thumbnail-small"></div>';
+                            }
+                            
+                            return '<div style="display: flex;"><img src="'.$s3image.'" alt="Product image" class="product-thumbnail-small"></div>';
+                        }
+                    })
                     ->editColumn('type', function ($row) {
                         if($row->type == 'combo_single'){
                             return 'Combo Single';
@@ -530,17 +530,13 @@ public function productStockHistory($id)
 
         $calculated_current_stock = ($stock_details['total_opening_stock']??0)
             + ($stock_details['total_purchase']??0) + ($stock_details['total_purchase_transfer']??0)
-            + ($stock_details['total_sell_return']??0) + ($stock_details['total_rewards_in']??0)
+            + ($stock_details['total_sell_return']??0)
+            + ($stock_details['total_delivery_return']??0)
             - ($stock_details['total_sold']??0) - ($stock_details['total_sell_transfer']??0)
             - ($stock_details['total_purchase_return']??0) - ($stock_details['total_adjusted']??0)
-            - ($stock_details['total_rewards_out']??0)
-            + ($stock_details['supplier_reward_exchange']??0) + ($stock_details['supplier_reward_exchange_receive']??0);
+            + ($stock_details['supplier_reward_exchange']??0) + ($stock_details['supplier_reward_exchange_receive']??0)
+            + ($stock_details['total_manufactured']??0) - ($stock_details['total_ingredient_used']??0);
         $stock_details['current_stock'] = $calculated_current_stock;
-
-        $vld = VariationLocationDetails::where('variation_id', $id)->where('location_id', $location_id)->first();
-        if ($vld && (float)$calculated_current_stock != (float)$vld->qty_available) {
-            $vld->update(['qty_available' => $calculated_current_stock]);
-        }
 
         $history_result = $this->productUtil->getVariationStockHistory(
             $business_id, $id, $location_id, $calculated_current_stock, 1, 25
@@ -621,20 +617,20 @@ public function productStockHistory($id)
                         $detail->location_id
                     );
 
-                    // Calculate the real current stock
+                    // Calculate the real current stock (must match ProductController stock-history formula)
                     $calculated_current_stock = ($stockDetails['total_opening_stock'] ?? 0)
                         + ($stockDetails['total_purchase'] ?? 0)
                         + ($stockDetails['total_purchase_transfer'] ?? 0)
                         + ($stockDetails['total_sell_return'] ?? 0)
-                        + ($stockDetails['total_rewards_in'] ?? 0)
+                        + ($stockDetails['total_delivery_return'] ?? 0)
                         - ($stockDetails['total_sold'] ?? 0)
                         - ($stockDetails['total_sell_transfer'] ?? 0)
                         - ($stockDetails['total_purchase_return'] ?? 0)
                         - ($stockDetails['total_adjusted'] ?? 0)
-                        - ($stockDetails['total_rewards_out'] ?? 0)
                         + ($stockDetails['supplier_reward_exchange'] ?? 0)
-                        + ($stockDetails['supplier_reward_exchange_receive'] ?? 0);
-                    // Example: calculated_current_stock = 20.00
+                        + ($stockDetails['supplier_reward_exchange_receive'] ?? 0)
+                        + ($stockDetails['total_manufactured'] ?? 0)
+                        - ($stockDetails['total_ingredient_used'] ?? 0);
 
                     // Compare qty_available vs calculated_current_stock
                     if (abs($calculated_current_stock - $qty_available) > 0.0001) {

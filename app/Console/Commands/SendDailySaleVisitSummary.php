@@ -130,40 +130,164 @@ class SendDailySaleVisitSummary extends Command
             ? round(($yesterdays_visits_count / $yesterday_target) * 100) : 0;
         $dod_change              = $overall_variance - $yesterday_variance;
 
-        $html = view('sales_visit.snapshot', compact(
+        $mapping_data = $this->buildMappingData($business_id, $today);
+
+        // Image 1: summary only (pass empty mapping_data so that section is hidden)
+        $html1 = view('sales_visit.snapshot', array_merge(compact(
             'today', 'business_name', 'todays_visits_count', 'total_target',
             'overall_variance', 'overall_remaining', 'overall_own_pct',
             'overall_other_pct', 'sales_report', 'yesterdays_visits_count',
             'yesterday_target', 'yesterday_variance', 'dod_change'
-        ))->render();
+        ), ['mapping_data' => []]))->render();
 
-        $fileName = 'auto_summary_' . $business_id . '_' . time() . '.png';
-        $tempPath = '/tmp/' . $fileName;
+        // Image 2: mapping compare only (only rendered when data exists)
+        $html2 = ! empty($mapping_data)
+            ? view('sales_visit.snapshot_mapping', compact('today', 'business_name', 'mapping_data'))->render()
+            : null;
+
+        $ts        = time();
+        $tempPath1 = '/tmp/auto_summary_' . $business_id . '_' . $ts . '_1.png';
+        $tempPath2 = '/tmp/auto_summary_' . $business_id . '_' . $ts . '_2.png';
 
         try {
-            Browsershot::html($html)
-                ->windowSize(800, 600)
+            Browsershot::html($html1)
+                ->windowSize(1000, 600)
                 ->fullPage()
                 ->waitUntilNetworkIdle()
                 ->noSandbox()
-                ->save($tempPath);
+                ->save($tempPath1);
 
-            $botToken = config('services.telegram.bot_token', '8737726993:AAEd8C5uWwHu5cYc8YVH4zfpUwUxSWaplSc');
-            $caption  = "📊 *Daily Sale Visit Summary*\nDate: " . $today->format('Y-m-d');
-
-            foreach ($chat_ids as $chat_id) {
-                Http::attach('photo', file_get_contents($tempPath), $fileName)
-                    ->post("https://api.telegram.org/bot{$botToken}/sendPhoto", [
-                        'chat_id'    => $chat_id,
-                        'caption'    => $caption,
-                        'parse_mode' => 'Markdown',
-                    ]);
+            if ($html2) {
+                Browsershot::html($html2)
+                    ->windowSize(1000, 600)
+                    ->fullPage()
+                    ->waitUntilNetworkIdle()
+                    ->noSandbox()
+                    ->save($tempPath2);
             }
 
-            if (file_exists($tempPath)) unlink($tempPath);
+            $botToken = config('services.telegram.bot_token', '8737726993:AAEd8C5uWwHu5cYc8YVH4zfpUwUxSWaplSc');
+            $caption1 = "📊 *Daily Sale Visit Summary*\nDate: " . $today->format('Y-m-d');
+            $caption2 = "📊 *Mapping Product Compare*\nDate: " . $today->format('Y-m-d');
+
+            foreach ($chat_ids as $chat_id) {
+                Http::attach('photo', file_get_contents($tempPath1), basename($tempPath1))
+                    ->post("https://api.telegram.org/bot{$botToken}/sendPhoto", [
+                        'chat_id'    => $chat_id,
+                        'caption'    => $caption1,
+                        'parse_mode' => 'Markdown',
+                    ]);
+
+                if ($html2 && file_exists($tempPath2)) {
+                    Http::attach('photo', file_get_contents($tempPath2), basename($tempPath2))
+                        ->post("https://api.telegram.org/bot{$botToken}/sendPhoto", [
+                            'chat_id'    => $chat_id,
+                            'caption'    => $caption2,
+                            'parse_mode' => 'Markdown',
+                        ]);
+                }
+            }
+
+            if (file_exists($tempPath1)) unlink($tempPath1);
+            if (file_exists($tempPath2)) unlink($tempPath2);
 
         } catch (\Exception $e) {
             $this->error("Telegram Error (business_id={$business_id}): " . $e->getMessage());
         }
+    }
+
+    private function buildMappingData(int $business_id, $date): array
+    {
+        $visitIds = DB::table('transactions_visit')
+            ->where('business_id', $business_id)
+            ->whereDate('transaction_date', $date)
+            ->pluck('id')
+            ->toArray();
+
+        if (empty($visitIds)) return [];
+
+        $lineData = DB::table('transaction_sell_lines_visit')
+            ->whereIn('transaction_id', $visitIds)
+            ->whereNotNull('product_id')
+            ->selectRaw('product_id, kind_product, SUM(quantity) as total_qty')
+            ->groupBy('product_id', 'kind_product')
+            ->get();
+
+        $ownQtys   = [];
+        $otherQtys = [];
+        foreach ($lineData as $row) {
+            if ((int) $row->kind_product === 0) {
+                $ownQtys[$row->product_id]   = (float) $row->total_qty;
+            } else {
+                $otherQtys[$row->product_id] = (float) $row->total_qty;
+            }
+        }
+
+        if (empty($ownQtys)) return [];
+
+        $ownProductRows = DB::table('products')
+            ->whereIn('id', array_keys($ownQtys))
+            ->select(['id', 'name', 'assigned_competitors_product'])
+            ->get()
+            ->keyBy('id');
+
+        $allCompetitorIds = [];
+        foreach ($ownProductRows as $p) {
+            $ids = json_decode($p->assigned_competitors_product ?? '[]', true) ?? [];
+            $allCompetitorIds = array_merge($allCompetitorIds, $ids);
+        }
+        $allCompetitorIds = array_values(array_unique(array_filter($allCompetitorIds)));
+
+        $competitorNames = [];
+        if (!empty($allCompetitorIds)) {
+            $competitorNames = DB::table('products')
+                ->whereIn('id', $allCompetitorIds)
+                ->pluck('name', 'id')
+                ->toArray();
+        }
+
+        $groups = [];
+        foreach ($ownProductRows as $ownId => $ownProduct) {
+            $ownQty        = $ownQtys[$ownId] ?? 0;
+            $competitorIds = array_filter(json_decode($ownProduct->assigned_competitors_product ?? '[]', true) ?? []);
+
+            if (empty($competitorIds)) continue;
+
+            $competitors        = [];
+            $totalCompetitorQty = 0;
+
+            foreach ($competitorIds as $compId) {
+                $compQty = $otherQtys[$compId] ?? 0;
+                $diff    = $ownQty - $compQty;
+                $win     = $diff > 0;
+                $result  = ($win ? 'WIN' : ($diff < 0 ? 'LOSE' : 'DRAW'))
+                         . ' ' . (int) $ownQty . ' vs ' . (int) $compQty;
+
+                $competitors[] = [
+                    'name'   => $competitorNames[$compId] ?? 'Unknown',
+                    'qty'    => $compQty,
+                    'result' => $result,
+                    'win'    => $win,
+                ];
+                $totalCompetitorQty += $compQty;
+            }
+
+            $marketSize = $ownQty + $totalCompetitorQty;
+            $ownPct     = $marketSize > 0 ? round(($ownQty / $marketSize) * 100) : 100;
+            $otherPct   = 100 - $ownPct;
+
+            $groups[] = [
+                'own_name'             => $ownProduct->name,
+                'own_qty'              => $ownQty,
+                'competitors'          => $competitors,
+                'total_competitor_qty' => $totalCompetitorQty,
+                'market_size'          => $marketSize,
+                'own_pct'              => $ownPct,
+                'other_pct'            => $otherPct,
+                'result'               => $ownQty > $totalCompetitorQty ? 'WIN' : 'LOSE',
+            ];
+        }
+
+        return $groups;
     }
 }

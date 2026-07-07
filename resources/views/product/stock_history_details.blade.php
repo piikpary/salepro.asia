@@ -33,17 +33,25 @@
 				</td>
 			</tr>
 			<tr>
-                <th>@lang('Stock Reward In')</th>
-                <td>
-                    <span class="display_currency" data-is_quantity="true">{{$stock_details['total_rewards_in']}}</span> {{$stock_details['unit']}}
-                </td>
-            </tr>
-			<tr>
                 <th>@lang('Supplier Reward Receive')</th>
                 <td>
                     <span class="display_currency" data-is_quantity="true">{{$stock_details['supplier_reward_exchange_receive']}}</span> {{$stock_details['unit']}}
                 </td>
             </tr>
+			<tr>
+                <th>Delivery Return</th>
+                <td>
+                    <span class="display_currency" data-is_quantity="true">{{$stock_details['total_delivery_return']}}</span> {{$stock_details['unit']}}
+                </td>
+            </tr>
+			@if(!empty($stock_details['total_manufactured']))
+			<tr>
+                <th>Manufactured</th>
+                <td>
+                    <span class="display_currency" data-is_quantity="true">{{$stock_details['total_manufactured']}}</span> {{$stock_details['unit']}}
+                </td>
+            </tr>
+			@endif
 		</table>
 	</div>
 	<div class="col-md-4 col-xs-4">
@@ -75,17 +83,19 @@
 				</td>
 			</tr>
 			<tr>
-                <th>@lang('Stock Reward Out')</th>
-                <td>
-                    <span class="display_currency" data-is_quantity="true">{{$stock_details['total_rewards_out']}}</span> {{$stock_details['unit']}}
-                </td>
-            </tr>
-			<tr>
 				<th>@lang('Supplier Reward Exchange')</th>
 				<td>
 					<span class="display_currency" data-is_quantity="true">{{$stock_details['supplier_reward_exchange']}}</span> {{$stock_details['unit']}}
 				</td>
 			</tr>
+			@if(!empty($stock_details['total_ingredient_used']))
+			<tr>
+				<th>Ingredient</th>
+				<td>
+					<span class="display_currency" data-is_quantity="true">{{$stock_details['total_ingredient_used']}}</span> {{$stock_details['unit']}}
+				</td>
+			</tr>
+			@endif
 		</table>
 	</div>
 

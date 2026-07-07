@@ -95,7 +95,7 @@
 				@endif
 				@if(!empty($pos_settings['amount_rounding_method']) && $pos_settings['amount_rounding_method'] > 0)
 				<td>
-					<b id="round_off">@lang('lang_v1.round_off'):</b> <span id="round_off_text">0</span>								
+					<b id="round_off">@lang('lang_v1.round_off'):</b> <span id="round_off_text">0</span>
 					<input type="hidden" name="round_off_amount" id="round_off_amount" value=0>
 				</td>
 				@endif

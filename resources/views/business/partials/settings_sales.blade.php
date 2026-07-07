@@ -104,11 +104,22 @@
         </div>
         <div class="col-sm-4">
             <div class="form-group">
+                <div class="checkbox">
+                    <br>
+                    <label>
+                    {!! Form::checkbox('pos_settings[enable_delivery_note]', 1, !empty($pos_settings['enable_delivery_note']), ['class' => 'input-icheck', 'id' => 'enable_delivery_note']); !!} Enable Delivery Note
+                    </label>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-4">
+            <div class="form-group">
                 {!! Form::label('so_invoice_action', __('lang_v1.so_invoice_action') . ':') !!}
                 {!! Form::select('pos_settings[so_invoice_action]',
                     [
                         'add_sale_invoice'  => __('lang_v1.so_action_add_sale_invoice'),
                         'add_sale_proforma' => __('lang_v1.so_action_add_sale_proforma'),
+                        'off'               => __('lang_v1.so_action_off'),
                     ],
                     $pos_settings['so_invoice_action'] ?? 'add_sale_invoice',
                     ['class' => 'form-control select2', 'style' => 'width:100%;']

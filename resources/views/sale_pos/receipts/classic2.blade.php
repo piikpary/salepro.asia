@@ -253,16 +253,18 @@
 		<br/>
 		@php
 			$p_width = 45;
+			// Show marketing price column only when label is set AND at least one line has weight
+			$show_marketing_col = !empty($receipt_details->marketing_price_label)
+				&& collect($receipt_details->lines)->contains(function($l) { return !empty($l['weight']); });
 		@endphp
 		@if(!empty($receipt_details->item_discount_label))
-			@php
-				$p_width -= 10;
-			@endphp
+			@php $p_width -= 10; @endphp
 		@endif
 		@if(!empty($receipt_details->discounted_unit_price_label))
-			@php
-				$p_width -= 10;
-			@endphp
+			@php $p_width -= 10; @endphp
+		@endif
+		@if($show_marketing_col)
+			@php $p_width -= 10; @endphp
 		@endif
 		<table class="table table-responsive table-slim">
 			<thead>
@@ -271,6 +273,9 @@
 						<th width="5%">{{$receipt_details->table_index_label}}</th>
 					@endif
 					<th width="{{$p_width}}%">{{$receipt_details->table_product_label}}</th>
+					@if($show_marketing_col)
+						<th class="text-right" width="10%">{{$receipt_details->marketing_price_label}}</th>
+					@endif
 					<th class="text-right" width="15%">{{$receipt_details->table_qty_label}}</th>
 					<th class="text-right" width="15%">{{$receipt_details->table_unit_price_label}}</th>
 					@if(!empty($receipt_details->discounted_unit_price_label))
@@ -322,8 +327,17 @@
                             </small>
                             @endif
                         </td>
+						@if($show_marketing_col)
 						<td class="text-right">
-							{{$line['quantity']}} {{$line['units']}} 
+							@if(!empty($line['weight']) && isset($line['default_sell_price']))
+								{{$receipt_details->currency_symbol}}{{ number_format($line['default_sell_price'] / $line['weight'], 2) }}
+							@else
+								&nbsp;
+							@endif
+						</td>
+						@endif
+						<td class="text-right">
+							{{$line['quantity']}} {{$line['units']}}
 
 							@if($receipt_details->show_base_unit_details && $line['quantity'] && $line['base_unit_multiplier'] !== 1)
                             <br><small>
@@ -374,6 +388,9 @@
 				@empty
 					<tr>
 						<td colspan="4">&nbsp;</td>
+						@if($show_marketing_col)
+						<td></td>
+						@endif
 						@if(!empty($receipt_details->discounted_unit_price_label))
     					<td></td>
     					@endif
