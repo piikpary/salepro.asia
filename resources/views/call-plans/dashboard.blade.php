@@ -584,12 +584,6 @@
         color: #2f76df;
         font-weight: 800;
     }
-    .task-info-value.assignee {
-    color: #2f76df;
-    font-weight: 800;
-    line-height: 1.5;
-    word-break: break-word;
-}
 
     .task-note {
         background: #f5f7fb;
@@ -1456,17 +1450,8 @@
                                 ?? $task->customer_phone
                                 ?? '-';
 
-                               $assigneeName = $task->assigned_name ?? null;
+                            $assigneeName = $task->assigned_name ?? '-';
 
-                        if (empty($assigneeName) && !empty($task->assigned_names ?? null)) {
-                            $assigneeName = collect($task->assigned_names)
-                                ->filter()
-                                ->map(fn ($name) => trim((string) $name))
-                                ->unique()
-                                ->join(', ');
-                        }
-
-                        $assigneeName = $assigneeName ?: '-';
                             $focusProductName = $task->product_name ?? '-';
                             
                             $taskNoteText = $task->notes ?? $task->note ?? null;
@@ -1508,7 +1493,7 @@
                                                         @endphp
 
                         <div class="task-card priority-{{ $task->priority }} task-item"
-                            draggable="true"
+                            draggable="{{ !empty($task->is_manual_call_log) ? 'false' : 'true' }}"
                             data-task-id="{{ $task->id }}"
                             data-type="{{ $task->task_type }}"
                             data-priority="{{ $task->priority }}"
@@ -1571,6 +1556,30 @@
 
                             @if(!empty($taskNoteText))
                                 <div class="task-note">{{ $taskNoteText }}</div>
+                            @endif
+                            @if($statusKey === 'completed' && (!empty($task->call_started_at) || !empty($task->call_ended_at) || !empty($task->call_duration_text)))
+                                <div style="margin-top:8px; padding:9px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; font-size:12px; color:#334155; line-height:1.6;">
+                                    @if(!empty($task->call_started_at))
+                                        <div>
+                                            <strong>Start Call:</strong>
+                                            {{ \Carbon\Carbon::parse($task->call_started_at)->format('Y-m-d H:i:s') }}
+                                        </div>
+                                    @endif
+
+                                    @if(!empty($task->call_ended_at))
+                                        <div>
+                                            <strong>End Call:</strong>
+                                            {{ \Carbon\Carbon::parse($task->call_ended_at)->format('Y-m-d H:i:s') }}
+                                        </div>
+                                    @endif
+
+                                    @if(!empty($task->call_duration_text))
+                                        <div>
+                                            <strong>Duration:</strong>
+                                            {{ $task->call_duration_text }}
+                                        </div>
+                                    @endif
+                                </div>
                             @endif
 
                             @if(in_array($statusKey, ['todo', 'follow_up']))
@@ -3458,11 +3467,108 @@ function renderCommuneDropdown() {
     let originalColumn = null;
 
     function initDragAndDropBoard() {
-    document.querySelectorAll('.task-card').forEach(card => {
-        card.removeAttribute('draggable');
-        card.setAttribute('draggable', 'false');
-    });
-   }
+        document.querySelectorAll('.task-card[draggable="true"]').forEach(card => {
+            card.addEventListener('dragstart', function (e) {
+                draggedTaskEl = this;
+                draggedTaskId = this.dataset.taskId;
+                originalColumn = this.closest('.board-drop-zone');
+
+                this.classList.add('dragging');
+
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', draggedTaskId);
+            });
+
+            card.addEventListener('dragend', function () {
+                this.classList.remove('dragging');
+
+                document.querySelectorAll('.board-drop-zone').forEach(col => {
+                    col.classList.remove('drag-over');
+                });
+
+                draggedTaskEl = null;
+                draggedTaskId = null;
+                originalColumn = null;
+            });
+        });
+
+        document.querySelectorAll('.board-drop-zone').forEach(column => {
+            column.addEventListener('dragover', function (e) {
+                e.preventDefault();
+
+                if (!draggedTaskEl) {
+                    return;
+                }
+
+                this.classList.add('drag-over');
+                e.dataTransfer.dropEffect = 'move';
+            });
+
+            column.addEventListener('dragleave', function (e) {
+                if (!this.contains(e.relatedTarget)) {
+                    this.classList.remove('drag-over');
+                }
+            });
+
+            column.addEventListener('drop', async function (e) {
+                e.preventDefault();
+
+                this.classList.remove('drag-over');
+
+                if (!draggedTaskEl || !draggedTaskId) {
+                    return;
+                }
+
+                const newStatus = this.dataset.status;
+                const oldStatus = originalColumn ? originalColumn.dataset.status : null;
+
+                if (!newStatus || newStatus === oldStatus) {
+                    return;
+                }
+
+                const emptyBox = this.querySelector('.empty-col');
+                if (emptyBox) {
+                    emptyBox.remove();
+                }
+
+                this.appendChild(draggedTaskEl);
+                updateBoardCounts();
+
+                try {
+                    const response = await fetch(`${moveTaskBaseUrl}/${draggedTaskId}/move`, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRF-TOKEN': csrfToken,
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            board_status: newStatus
+                        })
+                    });
+
+                    const result = await response.json();
+
+                    if (!response.ok || !result.ok) {
+                        throw new Error(result.message || 'Move task failed');
+                    }
+
+                    updateTaskButtonsByStatus(draggedTaskEl, newStatus);
+                    showSmallToast('Task moved successfully.');
+
+                } catch (error) {
+                    console.error(error);
+
+                    if (originalColumn && draggedTaskEl) {
+                        originalColumn.appendChild(draggedTaskEl);
+                    }
+
+                    updateBoardCounts();
+                    alert(error.message || 'Move task failed.');
+                }
+            });
+        });
+    }
 
     function getResultLabel(value) {
     const labels = {

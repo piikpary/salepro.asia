@@ -3,7 +3,6 @@
 
 @section('content')
 
-{{-- Style to match the layout in your image --}}
 <style>
     .footer-total {
         background-color: #d2d6de !important;
@@ -12,13 +11,11 @@
     .footer-total td {
         color: black !important;
     }
-    /* Center the buttons in the middle of the toolbar */
     div.dt-buttons {
         float: none !important;
         text-align: center;
         margin-bottom: 10px;
     }
-    /* Adjust button styles */
     .dt-button {
         background-color: #fff !important;
         border: 1px solid #ddd !important;
@@ -37,7 +34,7 @@
 </section>
 
 <section class="content">
-    
+
     @component('components.filters', ['title' => __('report.filters')])
         <div class="col-md-3">
             <div class="form-group">
@@ -67,62 +64,55 @@
                         <th rowspan="2" style="vertical-align: middle;">Address</th>
                         <th rowspan="2" style="vertical-align: middle;">Phone</th>
                         <th rowspan="2" style="vertical-align: middle;">Contact ID</th>
-                        
-                        <th colspan="2" class="text-center">GBS Sale</th>
-                        <th colspan="2" class="text-center">BSP Sale</th>
-                        <th colspan="2" class="text-center">Idol Sale</th>
-                        <th colspan="2" class="text-center">FYO 110ml Sale</th>
-                        <th colspan="2" class="text-center">FYO 180ml Sale</th>
-                        <th colspan="2" class="text-center">Fmix</th>
-                        <th colspan="2" class="text-center">FA + FG</th>
-                        <th colspan="2" class="text-center">FS+FW+Lychee</th>
-                        
+
+                        <th colspan="3" class="text-center">GBS Sale</th>
+                        <th colspan="3" class="text-center">BSP Sale</th>
+                        <th colspan="3" class="text-center">Idol Sale</th>
+                        <th colspan="3" class="text-center">FYO 110ml Sale</th>
+                        <th colspan="3" class="text-center">FYO 180ml Sale</th>
+                        <th colspan="3" class="text-center">Fmix</th>
+                        <th colspan="3" class="text-center">FA + FG</th>
+                        <th colspan="3" class="text-center">FS+FW+Lychee</th>
+
                         <th rowspan="2" style="vertical-align: middle;">Total</th>
                     </tr>
                     <tr>
-                        <th>BUY+SCHEME</th>
-                        <th>CLAIM</th>
-                        
-                        <th>BUY+SCHEME</th>
-                        <th>CLAIM</th>
-                        
-                        <th>BUY+SCHEME</th>
-                        <th>CLAIM</th>
-                        
-                        <th>BUY+SCHEME</th>
-                        <th>CLAIM</th>
-                        
-                        <th>BUY+SCHEME</th>
-                        <th>CLAIM</th>
-                        
-                        <th>BUY+SCHEME</th>
-                        <th>CLAIM</th>
-                        
-                        <th>BUY+SCHEME</th>
-                        <th>CLAIM</th>
-                        
-                        <th>BUY+SCHEME</th>
-                        <th>CLAIM</th>
+                        <th>BUY</th><th>SCHEME</th><th>CLAIM</th>
+                        <th>BUY</th><th>SCHEME</th><th>CLAIM</th>
+                        <th>BUY</th><th>SCHEME</th><th>CLAIM</th>
+                        <th>BUY</th><th>SCHEME</th><th>CLAIM</th>
+                        <th>BUY</th><th>SCHEME</th><th>CLAIM</th>
+                        <th>BUY</th><th>SCHEME</th><th>CLAIM</th>
+                        <th>BUY</th><th>SCHEME</th><th>CLAIM</th>
+                        <th>BUY</th><th>SCHEME</th><th>CLAIM</th>
                     </tr>
                 </thead>
                 <tfoot>
                     <tr class="bg-gray font-17 footer-total">
                         <td colspan="4" class="text-center"><strong>TOTAL:</strong></td>
                         <td id="footer_gbs_buy">0</td>
+                        <td id="footer_gbs_scheme">0</td>
                         <td id="footer_gbs_claim">0</td>
                         <td id="footer_bsp_buy">0</td>
+                        <td id="footer_bsp_scheme">0</td>
                         <td id="footer_bsp_claim">0</td>
                         <td id="footer_idol_buy">0</td>
+                        <td id="footer_idol_scheme">0</td>
                         <td id="footer_idol_claim">0</td>
                         <td id="footer_fyo110_buy">0</td>
+                        <td id="footer_fyo110_scheme">0</td>
                         <td id="footer_fyo110_claim">0</td>
                         <td id="footer_fyo180_buy">0</td>
+                        <td id="footer_fyo180_scheme">0</td>
                         <td id="footer_fyo180_claim">0</td>
                         <td id="footer_fmix_buy">0</td>
+                        <td id="footer_fmix_scheme">0</td>
                         <td id="footer_fmix_claim">0</td>
                         <td id="footer_fafg_buy">0</td>
+                        <td id="footer_fafg_scheme">0</td>
                         <td id="footer_fafg_claim">0</td>
                         <td id="footer_fsfwlychee_buy">0</td>
+                        <td id="footer_fsfwlychee_scheme">0</td>
                         <td id="footer_fsfwlychee_claim">0</td>
                         <td id="footer_total">0</td>
                     </tr>
@@ -148,10 +138,9 @@
    $(document).ready( function(){
     var claim_report_table;
 
-    // Date Picker Settings
     if($('#claim_report_date_range').length == 1){
         $('#claim_report_date_range').daterangepicker(
-            dateRangeSettings, 
+            dateRangeSettings,
             function(start, end) {
                 $('#claim_report_date_range').val(
                     start.format(moment_date_format) + ' ~ ' + end.format(moment_date_format)
@@ -159,20 +148,17 @@
                 claim_report_table.ajax.reload();
             }
         );
-        
-        // Set Default Date (This Month)
         $('#claim_report_date_range').val(
             moment().startOf('month').format(moment_date_format) + ' ~ ' + moment().endOf('month').format(moment_date_format)
         );
     }
 
-    // Initialize DataTable
     claim_report_table = $('#claim_report_table').DataTable({
         processing: true,
         serverSide: true,
         searching: true,
-        ordering: false, 
-        pageLength: -1, // Show all records
+        ordering: false,
+        pageLength: -1,
         lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
         dom: '<"row"<"col-md-3"l><"col-md-6 text-center"B><"col-md-3"f>>rtip',
         buttons: [
@@ -224,91 +210,91 @@
             }
         },
         columns: [
-            { data: 'name_wholesale', name: 'name_wholesale' },
-            { data: 'address', name: 'address' }, 
-            { data: 'phone', name: 'phone' },
-            { data: 'contact_id', name: 'contact_id' },
-            
+            { data: 'name_wholesale',     name: 'name_wholesale' },
+            { data: 'address',            name: 'address' },
+            { data: 'phone',              name: 'phone' },
+            { data: 'contact_id',         name: 'contact_id' },
             // GBS
-            { data: 'gbs_buy', name: 'gbs_buy', searchable: false },
-            { data: 'gbs_claim', name: 'gbs_claim', searchable: false }, 
-            
+            { data: 'gbs_buy',            name: 'gbs_buy',            searchable: false },
+            { data: 'gbs_scheme',         name: 'gbs_scheme',         searchable: false },
+            { data: 'gbs_claim',          name: 'gbs_claim',          searchable: false },
             // BSP
-            { data: 'bsp_buy', name: 'bsp_buy', searchable: false },
-            { data: 'bsp_claim', name: 'bsp_claim', searchable: false }, 
-            
+            { data: 'bsp_buy',            name: 'bsp_buy',            searchable: false },
+            { data: 'bsp_scheme',         name: 'bsp_scheme',         searchable: false },
+            { data: 'bsp_claim',          name: 'bsp_claim',          searchable: false },
             // Idol
-            { data: 'idol_buy', name: 'idol_buy', searchable: false },
-            { data: 'idol_claim', name: 'idol_claim', searchable: false }, 
-            
+            { data: 'idol_buy',           name: 'idol_buy',           searchable: false },
+            { data: 'idol_scheme',        name: 'idol_scheme',        searchable: false },
+            { data: 'idol_claim',         name: 'idol_claim',         searchable: false },
             // FYO 110ml
-            { data: 'fyo110_buy', name: 'fyo110_buy', searchable: false },
-            { data: 'fyo110_claim', name: 'fyo110_claim', searchable: false }, 
-
+            { data: 'fyo110_buy',         name: 'fyo110_buy',         searchable: false },
+            { data: 'fyo110_scheme',      name: 'fyo110_scheme',      searchable: false },
+            { data: 'fyo110_claim',       name: 'fyo110_claim',       searchable: false },
             // FYO 180ml
-            { data: 'fyo180_buy', name: 'fyo180_buy', searchable: false },
-            { data: 'fyo180_claim', name: 'fyo180_claim', searchable: false }, 
-
+            { data: 'fyo180_buy',         name: 'fyo180_buy',         searchable: false },
+            { data: 'fyo180_scheme',      name: 'fyo180_scheme',      searchable: false },
+            { data: 'fyo180_claim',       name: 'fyo180_claim',       searchable: false },
             // Fmix
-            { data: 'fmix_buy', name: 'fmix_buy', searchable: false },
-            { data: 'fmix_claim', name: 'fmix_claim', searchable: false },
-
+            { data: 'fmix_buy',           name: 'fmix_buy',           searchable: false },
+            { data: 'fmix_scheme',        name: 'fmix_scheme',        searchable: false },
+            { data: 'fmix_claim',         name: 'fmix_claim',         searchable: false },
             // FA + FG
-            { data: 'fafg_buy', name: 'fafg_buy', searchable: false },
-            { data: 'fafg_claim', name: 'fafg_claim', searchable: false },
-
+            { data: 'fafg_buy',           name: 'fafg_buy',           searchable: false },
+            { data: 'fafg_scheme',        name: 'fafg_scheme',        searchable: false },
+            { data: 'fafg_claim',         name: 'fafg_claim',         searchable: false },
             // FS+FW+Lychee
-            { data: 'fsfwlychee_buy', name: 'fsfwlychee_buy', searchable: false },
-            { data: 'fsfwlychee_claim', name: 'fsfwlychee_claim', searchable: false },
-
+            { data: 'fsfwlychee_buy',     name: 'fsfwlychee_buy',     searchable: false },
+            { data: 'fsfwlychee_scheme',  name: 'fsfwlychee_scheme',  searchable: false },
+            { data: 'fsfwlychee_claim',   name: 'fsfwlychee_claim',   searchable: false },
             // Total
-            { data: 'total_qty', name: 'total_qty', searchable: false }
+            { data: 'total_qty',          name: 'total_qty',          searchable: false }
         ],
         fnDrawCallback: function(oSettings) {
             var json = oSettings.json;
             if(json && json.footer_gbs_buy !== undefined){
                 $('#footer_gbs_buy').text(json.footer_gbs_buy);
+                $('#footer_gbs_scheme').text(json.footer_gbs_scheme);
                 $('#footer_gbs_claim').text(json.footer_gbs_claim);
                 $('#footer_bsp_buy').text(json.footer_bsp_buy);
+                $('#footer_bsp_scheme').text(json.footer_bsp_scheme);
                 $('#footer_bsp_claim').text(json.footer_bsp_claim);
                 $('#footer_idol_buy').text(json.footer_idol_buy);
+                $('#footer_idol_scheme').text(json.footer_idol_scheme);
                 $('#footer_idol_claim').text(json.footer_idol_claim);
                 $('#footer_fyo110_buy').text(json.footer_fyo110_buy);
+                $('#footer_fyo110_scheme').text(json.footer_fyo110_scheme);
                 $('#footer_fyo110_claim').text(json.footer_fyo110_claim);
                 $('#footer_fyo180_buy').text(json.footer_fyo180_buy);
+                $('#footer_fyo180_scheme').text(json.footer_fyo180_scheme);
                 $('#footer_fyo180_claim').text(json.footer_fyo180_claim);
                 $('#footer_fmix_buy').text(json.footer_fmix_buy);
+                $('#footer_fmix_scheme').text(json.footer_fmix_scheme);
                 $('#footer_fmix_claim').text(json.footer_fmix_claim);
                 $('#footer_fafg_buy').text(json.footer_fafg_buy);
+                $('#footer_fafg_scheme').text(json.footer_fafg_scheme);
                 $('#footer_fafg_claim').text(json.footer_fafg_claim);
                 $('#footer_fsfwlychee_buy').text(json.footer_fsfwlychee_buy);
+                $('#footer_fsfwlychee_scheme').text(json.footer_fsfwlychee_scheme);
                 $('#footer_fsfwlychee_claim').text(json.footer_fsfwlychee_claim);
                 $('#footer_total').html('<strong>' + json.footer_total + '</strong>');
             } else {
-                // Reset to 0 if no data
-                $('#footer_gbs_buy').text('0');
-                $('#footer_gbs_claim').text('0');
-                $('#footer_bsp_buy').text('0');
-                $('#footer_bsp_claim').text('0');
-                $('#footer_idol_buy').text('0');
-                $('#footer_idol_claim').text('0');
-                $('#footer_fyo110_buy').text('0');
-                $('#footer_fyo110_claim').text('0');
-                $('#footer_fyo180_buy').text('0');
-                $('#footer_fyo180_claim').text('0');
-                $('#footer_fmix_buy').text('0');
-                $('#footer_fmix_claim').text('0');
-                $('#footer_fafg_buy').text('0');
-                $('#footer_fafg_claim').text('0');
-                $('#footer_fsfwlychee_buy').text('0');
-                $('#footer_fsfwlychee_claim').text('0');
+                var ids = [
+                    'footer_gbs_buy','footer_gbs_scheme','footer_gbs_claim',
+                    'footer_bsp_buy','footer_bsp_scheme','footer_bsp_claim',
+                    'footer_idol_buy','footer_idol_scheme','footer_idol_claim',
+                    'footer_fyo110_buy','footer_fyo110_scheme','footer_fyo110_claim',
+                    'footer_fyo180_buy','footer_fyo180_scheme','footer_fyo180_claim',
+                    'footer_fmix_buy','footer_fmix_scheme','footer_fmix_claim',
+                    'footer_fafg_buy','footer_fafg_scheme','footer_fafg_claim',
+                    'footer_fsfwlychee_buy','footer_fsfwlychee_scheme','footer_fsfwlychee_claim'
+                ];
+                ids.forEach(function(id){ $('#' + id).text('0'); });
                 $('#footer_total').html('<strong>0</strong>');
             }
             __currency_convert_recursively($('#claim_report_table'));
         }
     });
 
-    // Filter Change Event
     $('#customer_id').change(function(){
         claim_report_table.ajax.reload();
     });
@@ -317,10 +303,9 @@
         claim_report_table.ajax.reload();
     });
 
-    // --- Custom Excel Export Function (Matches Display Format) ---
     function exportClaimReportToExcel() {
         var params = claim_report_table.ajax.params();
-        params.length = -1; 
+        params.length = -1;
 
         var dtSearch = claim_report_table.search();
         if(dtSearch) {
@@ -333,79 +318,62 @@
             data: params,
             success: function(response) {
                 var data = response.data;
-                var footer = response; 
+                var footer = response;
 
                 var header1 = [
                     "Name Wholesale", "Address", "Phone", "Contact ID",
-                    "GBS Sale", "", 
-                    "BSP Sale", "",
-                    "Idol Sale", "",
-                    "FYO 110ml Sale", "",
-                    "FYO 180ml Sale", "",
-                    "Fmix", "",
-                    "FA + FG", "",
-                    "FS+FW+Lychee", "",
+                    "GBS Sale", "", "",
+                    "BSP Sale", "", "",
+                    "Idol Sale", "", "",
+                    "FYO 110ml Sale", "", "",
+                    "FYO 180ml Sale", "", "",
+                    "Fmix", "", "",
+                    "FA + FG", "", "",
+                    "FS+FW+Lychee", "", "",
                     "Total"
                 ];
 
                 var header2 = [
-                    "", "", "", "", 
-                    "BUY+SCHEME", "CLAIM",
-                    "BUY+SCHEME", "CLAIM",
-                    "BUY+SCHEME", "CLAIM",
-                    "BUY+SCHEME", "CLAIM",
-                    "BUY+SCHEME", "CLAIM",
-                    "BUY+SCHEME", "CLAIM",
-                    "BUY+SCHEME", "CLAIM",
-                    "BUY+SCHEME", "CLAIM",
-                    "" 
+                    "", "", "", "",
+                    "BUY", "SCHEME", "CLAIM",
+                    "BUY", "SCHEME", "CLAIM",
+                    "BUY", "SCHEME", "CLAIM",
+                    "BUY", "SCHEME", "CLAIM",
+                    "BUY", "SCHEME", "CLAIM",
+                    "BUY", "SCHEME", "CLAIM",
+                    "BUY", "SCHEME", "CLAIM",
+                    "BUY", "SCHEME", "CLAIM",
+                    ""
                 ];
+
+                var p = function(val) { return parseFloat((val || '0').toString().replace(/<[^>]*>/g, '').replace(/,/g, '')) || 0; };
 
                 var excelRows = data.map(function(row) {
                     return [
-                        row.name_wholesale,
-                        row.address,
-                        row.phone,
-                        row.contact_id,
-                        parseFloat(row.gbs_buy.replace(/,/g, '')) || 0,
-                        parseFloat(row.gbs_claim.replace(/,/g, '')) || 0,
-                        parseFloat(row.bsp_buy.replace(/,/g, '')) || 0,
-                        parseFloat(row.bsp_claim.replace(/,/g, '')) || 0,
-                        parseFloat(row.idol_buy.replace(/,/g, '')) || 0,
-                        parseFloat(row.idol_claim.replace(/,/g, '')) || 0,
-                        parseFloat(row.fyo110_buy.replace(/,/g, '')) || 0,
-                        parseFloat(row.fyo110_claim.replace(/,/g, '')) || 0,
-                        parseFloat(row.fyo180_buy.replace(/,/g, '')) || 0,
-                        parseFloat(row.fyo180_claim.replace(/,/g, '')) || 0,
-                        parseFloat(row.fmix_buy.replace(/,/g, '')) || 0,
-                        parseFloat(row.fmix_claim.replace(/,/g, '')) || 0,
-                        parseFloat(row.fafg_buy.replace(/,/g, '')) || 0,
-                        parseFloat(row.fafg_claim.replace(/,/g, '')) || 0,
-                        parseFloat(row.fsfwlychee_buy.replace(/,/g, '')) || 0,
-                        parseFloat(row.fsfwlychee_claim.replace(/,/g, '')) || 0,
-                        parseFloat(row.total_qty.toString().replace(/<[^>]*>/g, '').replace(/,/g, '')) || 0
+                        row.name_wholesale, row.address, row.phone, row.contact_id,
+                        p(row.gbs_buy), p(row.gbs_scheme), p(row.gbs_claim),
+                        p(row.bsp_buy), p(row.bsp_scheme), p(row.bsp_claim),
+                        p(row.idol_buy), p(row.idol_scheme), p(row.idol_claim),
+                        p(row.fyo110_buy), p(row.fyo110_scheme), p(row.fyo110_claim),
+                        p(row.fyo180_buy), p(row.fyo180_scheme), p(row.fyo180_claim),
+                        p(row.fmix_buy), p(row.fmix_scheme), p(row.fmix_claim),
+                        p(row.fafg_buy), p(row.fafg_scheme), p(row.fafg_claim),
+                        p(row.fsfwlychee_buy), p(row.fsfwlychee_scheme), p(row.fsfwlychee_claim),
+                        p(row.total_qty)
                     ];
                 });
 
                 var footerRow = [
                     "TOTAL:", "", "", "",
-                    parseFloat(footer.footer_gbs_buy.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_gbs_claim.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_bsp_buy.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_bsp_claim.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_idol_buy.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_idol_claim.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_fyo110_buy.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_fyo110_claim.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_fyo180_buy.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_fyo180_claim.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_fmix_buy.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_fmix_claim.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_fafg_buy.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_fafg_claim.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_fsfwlychee_buy.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_fsfwlychee_claim.replace(/,/g, '')) || 0,
-                    parseFloat(footer.footer_total.replace(/,/g, '')) || 0
+                    p(footer.footer_gbs_buy), p(footer.footer_gbs_scheme), p(footer.footer_gbs_claim),
+                    p(footer.footer_bsp_buy), p(footer.footer_bsp_scheme), p(footer.footer_bsp_claim),
+                    p(footer.footer_idol_buy), p(footer.footer_idol_scheme), p(footer.footer_idol_claim),
+                    p(footer.footer_fyo110_buy), p(footer.footer_fyo110_scheme), p(footer.footer_fyo110_claim),
+                    p(footer.footer_fyo180_buy), p(footer.footer_fyo180_scheme), p(footer.footer_fyo180_claim),
+                    p(footer.footer_fmix_buy), p(footer.footer_fmix_scheme), p(footer.footer_fmix_claim),
+                    p(footer.footer_fafg_buy), p(footer.footer_fafg_scheme), p(footer.footer_fafg_claim),
+                    p(footer.footer_fsfwlychee_buy), p(footer.footer_fsfwlychee_scheme), p(footer.footer_fsfwlychee_claim),
+                    p(footer.footer_total)
                 ];
 
                 var ws_data = [header1, header2].concat(excelRows);
@@ -414,29 +382,33 @@
                 var ws = XLSX.utils.aoa_to_sheet(ws_data);
 
                 ws['!merges'] = [
-                    { s: {r:0, c:0}, e: {r:1, c:0} }, // Name Wholesale
-                    { s: {r:0, c:1}, e: {r:1, c:1} }, // Address
-                    { s: {r:0, c:2}, e: {r:1, c:2} }, // Phone
-                    { s: {r:0, c:3}, e: {r:1, c:3} }, // Contact ID
-                    { s: {r:0, c:4}, e: {r:0, c:5} }, // GBS Sale
-                    { s: {r:0, c:6}, e: {r:0, c:7} }, // BSP Sale
-                    { s: {r:0, c:8}, e: {r:0, c:9} }, // Idol Sale
-                    { s: {r:0, c:10}, e: {r:0, c:11} }, // FYO 110ml Sale
-                    { s: {r:0, c:12}, e: {r:0, c:13} }, // FYO 180ml Sale
-                    { s: {r:0, c:14}, e: {r:0, c:15} }, // Fmix
-                    { s: {r:0, c:16}, e: {r:0, c:17} }, // FA + FG
-                    { s: {r:0, c:18}, e: {r:0, c:19} }, // FS+FW+Lychee
-                    { s: {r:0, c:20}, e: {r:1, c:20} }, // Total
+                    { s: {r:0, c:0}, e: {r:1, c:0} },   // Name Wholesale
+                    { s: {r:0, c:1}, e: {r:1, c:1} },   // Address
+                    { s: {r:0, c:2}, e: {r:1, c:2} },   // Phone
+                    { s: {r:0, c:3}, e: {r:1, c:3} },   // Contact ID
+                    { s: {r:0, c:4},  e: {r:0, c:6}  }, // GBS Sale
+                    { s: {r:0, c:7},  e: {r:0, c:9}  }, // BSP Sale
+                    { s: {r:0, c:10}, e: {r:0, c:12} }, // Idol Sale
+                    { s: {r:0, c:13}, e: {r:0, c:15} }, // FYO 110ml Sale
+                    { s: {r:0, c:16}, e: {r:0, c:18} }, // FYO 180ml Sale
+                    { s: {r:0, c:19}, e: {r:0, c:21} }, // Fmix
+                    { s: {r:0, c:22}, e: {r:0, c:24} }, // FA + FG
+                    { s: {r:0, c:25}, e: {r:0, c:27} }, // FS+FW+Lychee
+                    { s: {r:0, c:28}, e: {r:1, c:28} }, // Total
                     { s: {r: ws_data.length-1, c:0}, e: {r: ws_data.length-1, c:3} } // Footer TOTAL label
                 ];
 
                 ws['!cols'] = [
-                    {wch: 25}, {wch: 20}, {wch: 15}, {wch: 10}, 
-                    {wch: 12}, {wch: 10}, {wch: 12}, {wch: 10}, 
-                    {wch: 12}, {wch: 10}, {wch: 12}, {wch: 10}, 
-                    {wch: 12}, {wch: 10}, {wch: 12}, {wch: 10}, 
-                    {wch: 12}, {wch: 10}, {wch: 12}, {wch: 10}, 
-                    {wch: 12}
+                    {wch: 25}, {wch: 20}, {wch: 15}, {wch: 10},
+                    {wch: 8}, {wch: 8}, {wch: 8},
+                    {wch: 8}, {wch: 8}, {wch: 8},
+                    {wch: 8}, {wch: 8}, {wch: 8},
+                    {wch: 8}, {wch: 8}, {wch: 8},
+                    {wch: 8}, {wch: 8}, {wch: 8},
+                    {wch: 8}, {wch: 8}, {wch: 8},
+                    {wch: 8}, {wch: 8}, {wch: 8},
+                    {wch: 8}, {wch: 8}, {wch: 8},
+                    {wch: 10}
                 ];
 
                 var wb = XLSX.utils.book_new();

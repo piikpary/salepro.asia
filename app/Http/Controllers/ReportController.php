@@ -5003,35 +5003,43 @@ public function ClaimReport(Request $request)
             'c.id as contact_id',
 
             // GBS Sale
-            DB::raw("COALESCE(SUM(CASE WHEN p.sku IN ('9032', '9030') THEN tsl.quantity ELSE 0 END), 0) as gbs_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.sku = '9032' THEN tsl.quantity ELSE 0 END), 0) as gbs_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.sku = '9030' THEN tsl.quantity ELSE 0 END), 0) as gbs_scheme"),
             DB::raw("COALESCE(SUM(CASE WHEN p.sku = '9031' THEN tsl.quantity ELSE 0 END), 0) as gbs_claim"),
 
             // BSP Sale
-            DB::raw("COALESCE(SUM(CASE WHEN p.sku IN ('8638', '8308') THEN tsl.quantity ELSE 0 END), 0) as bsp_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.sku = '8638' THEN tsl.quantity ELSE 0 END), 0) as bsp_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.sku = '8308' THEN tsl.quantity ELSE 0 END), 0) as bsp_scheme"),
             DB::raw("COALESCE(SUM(CASE WHEN p.sku = '8309' THEN tsl.quantity ELSE 0 END), 0) as bsp_claim"),
 
             // Idol Sale
-            DB::raw("COALESCE(SUM(CASE WHEN p.sku IN ('8647', '8310') THEN tsl.quantity ELSE 0 END), 0) as idol_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.sku = '8647' THEN tsl.quantity ELSE 0 END), 0) as idol_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.sku = '8310' THEN tsl.quantity ELSE 0 END), 0) as idol_scheme"),
             DB::raw("COALESCE(SUM(CASE WHEN p.sku = '8311' THEN tsl.quantity ELSE 0 END), 0) as idol_claim"),
 
             // FYO 110ml Sale
-            DB::raw("COALESCE(SUM(CASE WHEN p.sku IN ('8860', '8721') THEN tsl.quantity ELSE 0 END), 0) as fyo110_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.sku = '8860' THEN tsl.quantity ELSE 0 END), 0) as fyo110_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.sku = '8721' THEN tsl.quantity ELSE 0 END), 0) as fyo110_scheme"),
             DB::raw("COALESCE(SUM(CASE WHEN p.sku = '10083' THEN tsl.quantity ELSE 0 END), 0) as fyo110_claim"),
 
             // FYO 180ml Sale - Replace XXXX, YYYY, ZZZZ with actual SKUs
-            DB::raw("COALESCE(SUM(CASE WHEN p.sku IN ('XXXX', 'YYYY') THEN tsl.quantity ELSE 0 END), 0) as fyo180_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.sku = 'XXXX' THEN tsl.quantity ELSE 0 END), 0) as fyo180_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.sku = 'YYYY' THEN tsl.quantity ELSE 0 END), 0) as fyo180_scheme"),
             DB::raw("COALESCE(SUM(CASE WHEN p.sku = 'ZZZZ' THEN tsl.quantity ELSE 0 END), 0) as fyo180_claim"),
 
-            // Fmix Sale: Fmix sale(8744) + Fmix scheme(9770) | Claim: Fmix claim(10068)
-            DB::raw("COALESCE(SUM(CASE WHEN p.id IN (8744, 9770) THEN tsl.quantity ELSE 0 END), 0) as fmix_buy"),
+            // Fmix: sale(8744) | scheme(9770) | claim(10068)
+            DB::raw("COALESCE(SUM(CASE WHEN p.id = 8744 THEN tsl.quantity ELSE 0 END), 0) as fmix_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.id = 9770 THEN tsl.quantity ELSE 0 END), 0) as fmix_scheme"),
             DB::raw("COALESCE(SUM(CASE WHEN p.id = 10068 THEN tsl.quantity ELSE 0 END), 0) as fmix_claim"),
 
-            // FA + FG Sale: FA Sale(8724)+FG Sale(8863)+FG Scheme(10066)+FA Scheme(10064) | Claim: FA Claim(10065)+FG Claim(10067)
-            DB::raw("COALESCE(SUM(CASE WHEN p.id IN (8724, 8863, 10066, 10064) THEN tsl.quantity ELSE 0 END), 0) as fafg_buy"),
+            // FA+FG: sale(8724,8863) | scheme(10066,10064) | claim(10065,10067)
+            DB::raw("COALESCE(SUM(CASE WHEN p.id IN (8724, 8863) THEN tsl.quantity ELSE 0 END), 0) as fafg_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.id IN (10066, 10064) THEN tsl.quantity ELSE 0 END), 0) as fafg_scheme"),
             DB::raw("COALESCE(SUM(CASE WHEN p.id IN (10065, 10067) THEN tsl.quantity ELSE 0 END), 0) as fafg_claim"),
 
-            // FS+FW+Lychee: F-Lychee Sale(10206)+F-Lychee Scheme(10207)+FS Sale(8723)+FS Scheme(8334)+FW Sale(8722)+FW Scheme(8455) | Claim: FS Claim(10069)+FW Claim(10070)+F-Lychee Claim(10208)
-            DB::raw("COALESCE(SUM(CASE WHEN p.id IN (10206, 10207, 8723, 8334, 8722, 8455) THEN tsl.quantity ELSE 0 END), 0) as fsfwlychee_buy"),
+            // FS+FW+Lychee: sale(10206,8723,8722) | scheme(10207,8334,8455) | claim(10069,10070,10208)
+            DB::raw("COALESCE(SUM(CASE WHEN p.id IN (10206, 8723, 8722) THEN tsl.quantity ELSE 0 END), 0) as fsfwlychee_buy"),
+            DB::raw("COALESCE(SUM(CASE WHEN p.id IN (10207, 8334, 8455) THEN tsl.quantity ELSE 0 END), 0) as fsfwlychee_scheme"),
             DB::raw("COALESCE(SUM(CASE WHEN p.id IN (10069, 10070, 10208) THEN tsl.quantity ELSE 0 END), 0) as fsfwlychee_claim")
         )
         ->groupBy('c.id')
@@ -5041,14 +5049,14 @@ public function ClaimReport(Request $request)
         // Merge Config with Sales Data
         $final_data = [];
         $footer_totals = [
-            'footer_gbs_buy' => 0, 'footer_gbs_claim' => 0,
-            'footer_bsp_buy' => 0, 'footer_bsp_claim' => 0,
-            'footer_idol_buy' => 0, 'footer_idol_claim' => 0,
-            'footer_fyo110_buy' => 0, 'footer_fyo110_claim' => 0,
-            'footer_fyo180_buy' => 0, 'footer_fyo180_claim' => 0,
-            'footer_fmix_buy' => 0, 'footer_fmix_claim' => 0,
-            'footer_fafg_buy' => 0, 'footer_fafg_claim' => 0,
-            'footer_fsfwlychee_buy' => 0, 'footer_fsfwlychee_claim' => 0,
+            'footer_gbs_buy' => 0, 'footer_gbs_scheme' => 0, 'footer_gbs_claim' => 0,
+            'footer_bsp_buy' => 0, 'footer_bsp_scheme' => 0, 'footer_bsp_claim' => 0,
+            'footer_idol_buy' => 0, 'footer_idol_scheme' => 0, 'footer_idol_claim' => 0,
+            'footer_fyo110_buy' => 0, 'footer_fyo110_scheme' => 0, 'footer_fyo110_claim' => 0,
+            'footer_fyo180_buy' => 0, 'footer_fyo180_scheme' => 0, 'footer_fyo180_claim' => 0,
+            'footer_fmix_buy' => 0, 'footer_fmix_scheme' => 0, 'footer_fmix_claim' => 0,
+            'footer_fafg_buy' => 0, 'footer_fafg_scheme' => 0, 'footer_fafg_claim' => 0,
+            'footer_fsfwlychee_buy' => 0, 'footer_fsfwlychee_scheme' => 0, 'footer_fsfwlychee_claim' => 0,
             'footer_total' => 0
         ];
 
@@ -5069,38 +5077,46 @@ public function ClaimReport(Request $request)
             }
 
             $row = [
-                'contact_id_pk'      => $config['id'] ?? uniqid(),
-                'name_wholesale'     => $config['name'],
-                'address'            => $config['address'],
-                'phone'              => $config['phone'],
-                'contact_id'         => $config['contact_id_display'],
-                'gbs_buy'            => $sales ? (int)$sales->gbs_buy : 0,
-                'gbs_claim'          => $sales ? (int)$sales->gbs_claim : 0,
-                'bsp_buy'            => $sales ? (int)$sales->bsp_buy : 0,
-                'bsp_claim'          => $sales ? (int)$sales->bsp_claim : 0,
-                'idol_buy'           => $sales ? (int)$sales->idol_buy : 0,
-                'idol_claim'         => $sales ? (int)$sales->idol_claim : 0,
-                'fyo110_buy'         => $sales ? (int)$sales->fyo110_buy : 0,
-                'fyo110_claim'       => $sales ? (int)$sales->fyo110_claim : 0,
-                'fyo180_buy'         => $sales ? (int)$sales->fyo180_buy : 0,
-                'fyo180_claim'       => $sales ? (int)$sales->fyo180_claim : 0,
-                'fmix_buy'           => $sales ? (int)$sales->fmix_buy : 0,
-                'fmix_claim'         => $sales ? (int)$sales->fmix_claim : 0,
-                'fafg_buy'           => $sales ? (int)$sales->fafg_buy : 0,
-                'fafg_claim'         => $sales ? (int)$sales->fafg_claim : 0,
-                'fsfwlychee_buy'     => $sales ? (int)$sales->fsfwlychee_buy : 0,
-                'fsfwlychee_claim'   => $sales ? (int)$sales->fsfwlychee_claim : 0,
+                'contact_id_pk'        => $config['id'] ?? uniqid(),
+                'name_wholesale'       => $config['name'],
+                'address'              => $config['address'],
+                'phone'                => $config['phone'],
+                'contact_id'           => $config['contact_id_display'],
+                'gbs_buy'              => $sales ? (int)$sales->gbs_buy : 0,
+                'gbs_scheme'           => $sales ? (int)$sales->gbs_scheme : 0,
+                'gbs_claim'            => $sales ? (int)$sales->gbs_claim : 0,
+                'bsp_buy'              => $sales ? (int)$sales->bsp_buy : 0,
+                'bsp_scheme'           => $sales ? (int)$sales->bsp_scheme : 0,
+                'bsp_claim'            => $sales ? (int)$sales->bsp_claim : 0,
+                'idol_buy'             => $sales ? (int)$sales->idol_buy : 0,
+                'idol_scheme'          => $sales ? (int)$sales->idol_scheme : 0,
+                'idol_claim'           => $sales ? (int)$sales->idol_claim : 0,
+                'fyo110_buy'           => $sales ? (int)$sales->fyo110_buy : 0,
+                'fyo110_scheme'        => $sales ? (int)$sales->fyo110_scheme : 0,
+                'fyo110_claim'         => $sales ? (int)$sales->fyo110_claim : 0,
+                'fyo180_buy'           => $sales ? (int)$sales->fyo180_buy : 0,
+                'fyo180_scheme'        => $sales ? (int)$sales->fyo180_scheme : 0,
+                'fyo180_claim'         => $sales ? (int)$sales->fyo180_claim : 0,
+                'fmix_buy'             => $sales ? (int)$sales->fmix_buy : 0,
+                'fmix_scheme'          => $sales ? (int)$sales->fmix_scheme : 0,
+                'fmix_claim'           => $sales ? (int)$sales->fmix_claim : 0,
+                'fafg_buy'             => $sales ? (int)$sales->fafg_buy : 0,
+                'fafg_scheme'          => $sales ? (int)$sales->fafg_scheme : 0,
+                'fafg_claim'           => $sales ? (int)$sales->fafg_claim : 0,
+                'fsfwlychee_buy'       => $sales ? (int)$sales->fsfwlychee_buy : 0,
+                'fsfwlychee_scheme'    => $sales ? (int)$sales->fsfwlychee_scheme : 0,
+                'fsfwlychee_claim'     => $sales ? (int)$sales->fsfwlychee_claim : 0,
             ];
 
             // Calculate total_qty
-            $row['total_qty'] = $row['gbs_buy'] + $row['gbs_claim'] +
-                                $row['bsp_buy'] + $row['bsp_claim'] +
-                                $row['idol_buy'] + $row['idol_claim'] +
-                                $row['fyo110_buy'] + $row['fyo110_claim'] +
-                                $row['fyo180_buy'] + $row['fyo180_claim'] +
-                                $row['fmix_buy'] + $row['fmix_claim'] +
-                                $row['fafg_buy'] + $row['fafg_claim'] +
-                                $row['fsfwlychee_buy'] + $row['fsfwlychee_claim'];
+            $row['total_qty'] = $row['gbs_buy'] + $row['gbs_scheme'] + $row['gbs_claim'] +
+                                $row['bsp_buy'] + $row['bsp_scheme'] + $row['bsp_claim'] +
+                                $row['idol_buy'] + $row['idol_scheme'] + $row['idol_claim'] +
+                                $row['fyo110_buy'] + $row['fyo110_scheme'] + $row['fyo110_claim'] +
+                                $row['fyo180_buy'] + $row['fyo180_scheme'] + $row['fyo180_claim'] +
+                                $row['fmix_buy'] + $row['fmix_scheme'] + $row['fmix_claim'] +
+                                $row['fafg_buy'] + $row['fafg_scheme'] + $row['fafg_claim'] +
+                                $row['fsfwlychee_buy'] + $row['fsfwlychee_scheme'] + $row['fsfwlychee_claim'];
 
             // Apply Search Filter
             if (!empty($search)) {
@@ -5116,23 +5132,31 @@ public function ClaimReport(Request $request)
             }
 
             // Accumulate footer totals
-            $footer_totals['footer_gbs_buy']          += $row['gbs_buy'];
-            $footer_totals['footer_gbs_claim']         += $row['gbs_claim'];
-            $footer_totals['footer_bsp_buy']           += $row['bsp_buy'];
-            $footer_totals['footer_bsp_claim']         += $row['bsp_claim'];
-            $footer_totals['footer_idol_buy']          += $row['idol_buy'];
-            $footer_totals['footer_idol_claim']        += $row['idol_claim'];
-            $footer_totals['footer_fyo110_buy']        += $row['fyo110_buy'];
-            $footer_totals['footer_fyo110_claim']      += $row['fyo110_claim'];
-            $footer_totals['footer_fyo180_buy']        += $row['fyo180_buy'];
-            $footer_totals['footer_fyo180_claim']      += $row['fyo180_claim'];
-            $footer_totals['footer_fmix_buy']          += $row['fmix_buy'];
-            $footer_totals['footer_fmix_claim']        += $row['fmix_claim'];
-            $footer_totals['footer_fafg_buy']          += $row['fafg_buy'];
-            $footer_totals['footer_fafg_claim']        += $row['fafg_claim'];
-            $footer_totals['footer_fsfwlychee_buy']    += $row['fsfwlychee_buy'];
-            $footer_totals['footer_fsfwlychee_claim']  += $row['fsfwlychee_claim'];
-            $footer_totals['footer_total']             += $row['total_qty'];
+            $footer_totals['footer_gbs_buy']              += $row['gbs_buy'];
+            $footer_totals['footer_gbs_scheme']            += $row['gbs_scheme'];
+            $footer_totals['footer_gbs_claim']             += $row['gbs_claim'];
+            $footer_totals['footer_bsp_buy']               += $row['bsp_buy'];
+            $footer_totals['footer_bsp_scheme']            += $row['bsp_scheme'];
+            $footer_totals['footer_bsp_claim']             += $row['bsp_claim'];
+            $footer_totals['footer_idol_buy']              += $row['idol_buy'];
+            $footer_totals['footer_idol_scheme']           += $row['idol_scheme'];
+            $footer_totals['footer_idol_claim']            += $row['idol_claim'];
+            $footer_totals['footer_fyo110_buy']            += $row['fyo110_buy'];
+            $footer_totals['footer_fyo110_scheme']         += $row['fyo110_scheme'];
+            $footer_totals['footer_fyo110_claim']          += $row['fyo110_claim'];
+            $footer_totals['footer_fyo180_buy']            += $row['fyo180_buy'];
+            $footer_totals['footer_fyo180_scheme']         += $row['fyo180_scheme'];
+            $footer_totals['footer_fyo180_claim']          += $row['fyo180_claim'];
+            $footer_totals['footer_fmix_buy']              += $row['fmix_buy'];
+            $footer_totals['footer_fmix_scheme']           += $row['fmix_scheme'];
+            $footer_totals['footer_fmix_claim']            += $row['fmix_claim'];
+            $footer_totals['footer_fafg_buy']              += $row['fafg_buy'];
+            $footer_totals['footer_fafg_scheme']           += $row['fafg_scheme'];
+            $footer_totals['footer_fafg_claim']            += $row['fafg_claim'];
+            $footer_totals['footer_fsfwlychee_buy']        += $row['fsfwlychee_buy'];
+            $footer_totals['footer_fsfwlychee_scheme']     += $row['fsfwlychee_scheme'];
+            $footer_totals['footer_fsfwlychee_claim']      += $row['fsfwlychee_claim'];
+            $footer_totals['footer_total']                 += $row['total_qty'];
 
             $final_data[] = $row;
         }
@@ -5141,22 +5165,30 @@ public function ClaimReport(Request $request)
         $recordsFiltered = count($final_data);
 
         return Datatables::of(collect($final_data))
-            ->editColumn('gbs_buy',          function($row) { return $this->transactionUtil->num_f($row['gbs_buy']); })
-            ->editColumn('gbs_claim',         function($row) { return $this->transactionUtil->num_f($row['gbs_claim']); })
-            ->editColumn('bsp_buy',           function($row) { return $this->transactionUtil->num_f($row['bsp_buy']); })
-            ->editColumn('bsp_claim',         function($row) { return $this->transactionUtil->num_f($row['bsp_claim']); })
-            ->editColumn('idol_buy',          function($row) { return $this->transactionUtil->num_f($row['idol_buy']); })
-            ->editColumn('idol_claim',        function($row) { return $this->transactionUtil->num_f($row['idol_claim']); })
-            ->editColumn('fyo110_buy',        function($row) { return $this->transactionUtil->num_f($row['fyo110_buy']); })
-            ->editColumn('fyo110_claim',      function($row) { return $this->transactionUtil->num_f($row['fyo110_claim']); })
-            ->editColumn('fyo180_buy',        function($row) { return $this->transactionUtil->num_f($row['fyo180_buy']); })
-            ->editColumn('fyo180_claim',      function($row) { return $this->transactionUtil->num_f($row['fyo180_claim']); })
-            ->editColumn('fmix_buy',          function($row) { return $this->transactionUtil->num_f($row['fmix_buy']); })
-            ->editColumn('fmix_claim',        function($row) { return $this->transactionUtil->num_f($row['fmix_claim']); })
-            ->editColumn('fafg_buy',          function($row) { return $this->transactionUtil->num_f($row['fafg_buy']); })
-            ->editColumn('fafg_claim',        function($row) { return $this->transactionUtil->num_f($row['fafg_claim']); })
-            ->editColumn('fsfwlychee_buy',    function($row) { return $this->transactionUtil->num_f($row['fsfwlychee_buy']); })
-            ->editColumn('fsfwlychee_claim',  function($row) { return $this->transactionUtil->num_f($row['fsfwlychee_claim']); })
+            ->editColumn('gbs_buy',              function($row) { return $this->transactionUtil->num_f($row['gbs_buy']); })
+            ->editColumn('gbs_scheme',           function($row) { return $this->transactionUtil->num_f($row['gbs_scheme']); })
+            ->editColumn('gbs_claim',            function($row) { return $this->transactionUtil->num_f($row['gbs_claim']); })
+            ->editColumn('bsp_buy',              function($row) { return $this->transactionUtil->num_f($row['bsp_buy']); })
+            ->editColumn('bsp_scheme',           function($row) { return $this->transactionUtil->num_f($row['bsp_scheme']); })
+            ->editColumn('bsp_claim',            function($row) { return $this->transactionUtil->num_f($row['bsp_claim']); })
+            ->editColumn('idol_buy',             function($row) { return $this->transactionUtil->num_f($row['idol_buy']); })
+            ->editColumn('idol_scheme',          function($row) { return $this->transactionUtil->num_f($row['idol_scheme']); })
+            ->editColumn('idol_claim',           function($row) { return $this->transactionUtil->num_f($row['idol_claim']); })
+            ->editColumn('fyo110_buy',           function($row) { return $this->transactionUtil->num_f($row['fyo110_buy']); })
+            ->editColumn('fyo110_scheme',        function($row) { return $this->transactionUtil->num_f($row['fyo110_scheme']); })
+            ->editColumn('fyo110_claim',         function($row) { return $this->transactionUtil->num_f($row['fyo110_claim']); })
+            ->editColumn('fyo180_buy',           function($row) { return $this->transactionUtil->num_f($row['fyo180_buy']); })
+            ->editColumn('fyo180_scheme',        function($row) { return $this->transactionUtil->num_f($row['fyo180_scheme']); })
+            ->editColumn('fyo180_claim',         function($row) { return $this->transactionUtil->num_f($row['fyo180_claim']); })
+            ->editColumn('fmix_buy',             function($row) { return $this->transactionUtil->num_f($row['fmix_buy']); })
+            ->editColumn('fmix_scheme',          function($row) { return $this->transactionUtil->num_f($row['fmix_scheme']); })
+            ->editColumn('fmix_claim',           function($row) { return $this->transactionUtil->num_f($row['fmix_claim']); })
+            ->editColumn('fafg_buy',             function($row) { return $this->transactionUtil->num_f($row['fafg_buy']); })
+            ->editColumn('fafg_scheme',          function($row) { return $this->transactionUtil->num_f($row['fafg_scheme']); })
+            ->editColumn('fafg_claim',           function($row) { return $this->transactionUtil->num_f($row['fafg_claim']); })
+            ->editColumn('fsfwlychee_buy',       function($row) { return $this->transactionUtil->num_f($row['fsfwlychee_buy']); })
+            ->editColumn('fsfwlychee_scheme',    function($row) { return $this->transactionUtil->num_f($row['fsfwlychee_scheme']); })
+            ->editColumn('fsfwlychee_claim',     function($row) { return $this->transactionUtil->num_f($row['fsfwlychee_claim']); })
             ->editColumn('total_qty', function($row) {
                 return '<strong>' . $this->transactionUtil->num_f($row['total_qty']) . '</strong>';
             })

@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use Modules\Connector\Http\Controllers\Api\MobileCallController;
 
 Route::middleware('auth:api', 'timezone')->prefix('connector/api')->group(function () {
     Route::resource('business-location', Modules\Connector\Http\Controllers\Api\BusinessLocationController::class)->only('index', 'show');
@@ -96,6 +97,16 @@ Route::middleware('auth:api', 'timezone')->prefix('connector/api')->group(functi
 
     // Customer Credit Check API
     Route::get('mobile/customer-credit-check', [\Modules\Connector\Http\Controllers\Api\CustomerCreditCheckController::class, 'check']);
+
+
+	// Sale Call Plan Mobile API
+    Route::prefix('mobile')->group(function () {
+        Route::get('call-plans', [MobileCallController::class, 'callPlans']);
+        Route::post('call-logs', [MobileCallController::class, 'saveCallLog']);
+        Route::get('call-logs', [MobileCallController::class, 'callLogs']);
+        Route::get('call-dashboard', [MobileCallController::class, 'dashboard']);
+        Route::post('call-logs/sync', [MobileCallController::class, 'syncCallLogs']);
+    });
 });
 
 Route::middleware('auth:api', 'timezone')->prefix('connector/api/crm')->group(function () {
